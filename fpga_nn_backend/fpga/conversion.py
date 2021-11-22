@@ -5,11 +5,12 @@ Created on Sat Nov 20 17:35:25 2021
 @author: Shahir
 """
 
+import copy
 from enum import Enum
 
 import numpy as np
 
-from fpga_nn_py_backend.fpga.emulation import (
+from fpga_nn_backend.fpga.emulation import (
     serial_iterators,
     bfs_iterators
     )
@@ -42,7 +43,7 @@ class ConvertedNN:
     def __init__(self, input_shape):
         self.input_shape = input_shape
         self.weight_storage_info = {
-            'parameters': [],
+            'parameters': []
         }
         self.execution_info = {
             'layers': []
@@ -69,19 +70,26 @@ class ConvertedNN:
         """
         assert not self._frozen
         
+        # layer type
         assert isinstance(layer_type, LayerType)
+
+        # parameters maps parameter name to parameter index
         assert parameters is None or isinstance(parameters, dict)
         for k, v in parameters.items():
             assert isinstance(k, str)
             assert isinstance(v, int)
             assert 0 <= v < len(self.weight_storage_info['parameters'])
         
+        # input and output shape for the layer
         assert isinstance(input_shape, tuple)
         assert isinstance(output_shape, tuple)
+
+        # output stack index, where layer output is dumped in the BRAM
         assert isinstance(stack_output_index, int)
         assert stack_output_index >= 0
         assert stack_output_index <= self._current_stack_len
         
+        # input stack indices, where layer input data is sourced from BRAM
         for i in stack_input_indices:
             assert isinstance(i, int)
             assert i >= 0
@@ -207,12 +215,13 @@ class ConvertedNN:
             param_datas.append(param_data)
         
         return param_datas
-            
     
     def generate_parameter_coe(self, num_banks):
         if num_banks != 1:
             raise NotImplementedError()
         
+        # in future, utilize function below
+
         param_datas = self.generate_parameter_data()
         total_weight_data = b'\xff' + b''.join(param_datas)
         bin_str_data = bin(int.from_bytes(total_weight_data, byteorder='big'))
@@ -222,6 +231,25 @@ class ConvertedNN:
         
         return COE_INIT + bin_str_data
     
+    def generate_parameter_bank_info(self, num_banks):
+        raise NotImplementedError()
+        
+        param_datas = self.generate_parameter_data()
+        # generate bytes data for each BRAM bank
+        # generate start addr for each weight in each BRAM bank
+        # output any other necessary information so that we can create the verilog easily
+
+        info = {
+            'num_params': None,
+            'param_start_addrs': [],
+            'data_per_bank': [],
+            'iteration_strategy': None
+        }
+    
+    def get_execution_info(self):
+        # information needed to write verilog for all the layers
+        return copy.deepcopy(self._execution_info)
+
     def emulate_nn(self, input_data):
         pass
     

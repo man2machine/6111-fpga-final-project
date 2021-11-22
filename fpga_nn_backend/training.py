@@ -19,7 +19,7 @@ import datetime
 
 from tqdm import tqdm
 
-from fpga_nn_py_backend.utils import get_timestamp_str
+from fpga_nn_backend.utils import get_timestamp_str
 
 class OptimizerType(Enum):
     SGD = "sgd"

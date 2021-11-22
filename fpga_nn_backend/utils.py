@@ -10,7 +10,7 @@ import abc
 import datetime
 import json
 
-import fpga_nn_py_backend
+import fpga_nn_backend
 
 class JSONDictSerializable(metaclass=abc.ABCMeta):
     def __str__(self):
@@ -61,7 +61,7 @@ def number_menu(option_list):
     raise ValueError("Not recieving a valid input")
 
 def get_rel_pkg_path(path):
-    return os.path.abspath(os.path.join(os.path.dirname(fpga_nn_py_backend.__file__), "..", path))
+    return os.path.abspath(os.path.join(os.path.dirname(fpga_nn_backend.__file__), "..", path))
 
 def get_timestamp_str(include_seconds=True):
     if include_seconds:

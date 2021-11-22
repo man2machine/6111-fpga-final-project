@@ -10,7 +10,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
-from fpga_nn_py_backend.models.resnet_utils import ResNetBuilder, BasicBlock
+from fpga_nn_backend.models.resnet_utils import ResNetBuilder, BasicBlock
 
 class CNNToyModel(ResNetBuilder):
     MAX_POOL = 1
