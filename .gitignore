@@ -1,3 +1,14 @@
+dataset/
+logs/
+experiments/
+weights/
+sessions/
+extra/
+old/
+images/
+
+*.pckl
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
