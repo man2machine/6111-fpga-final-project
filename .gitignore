@@ -1,8 +1,11 @@
+*.coe
+
 dataset/
 logs/
 experiments/
 weights/
 sessions/
+models/
 extra/
 old/
 images/

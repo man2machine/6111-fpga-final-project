@@ -24,9 +24,6 @@ def get_bin_string(x):
     raw = bin(x)[2:]
     return raw.zfill(8)
 
-def check_matrix(x):
-    pass
-
 class LayerType(Enum):
     DENSE = 0
     CONV = 1
@@ -75,10 +72,11 @@ class ConvertedNN:
 
         # parameters maps parameter name to parameter index
         assert parameters is None or isinstance(parameters, dict)
-        for k, v in parameters.items():
-            assert isinstance(k, str)
-            assert isinstance(v, int)
-            assert 0 <= v < len(self.weight_storage_info['parameters'])
+        if parameters is not None:
+            for k, v in parameters.items():
+                assert isinstance(k, str)
+                assert isinstance(v, int)
+                assert 0 <= v < len(self.weight_storage_info['parameters'])
         
         # input and output shape for the layer
         assert isinstance(input_shape, tuple)
@@ -87,13 +85,13 @@ class ConvertedNN:
         # output stack index, where layer output is dumped in the BRAM
         assert isinstance(stack_output_index, int)
         assert stack_output_index >= 0
-        assert stack_output_index <= self._current_stack_len
+        assert stack_output_index <= len(self._current_stack)
         
         # input stack indices, where layer input data is sourced from BRAM
         for i in stack_input_indices:
             assert isinstance(i, int)
             assert i >= 0
-            assert i < self._current_stack_len
+            assert i < len(self._current_stack)
             assert stack_output_index >= i
         
         layer_info = {
@@ -123,7 +121,23 @@ class ConvertedNN:
         weight_index = len(self.weight_storage_info) - 1
         
         return weight_index
-        
+
+    def add_flatten_layer(self,
+                          input_shape,
+                          stack_input_index,
+                          stack_output_index):
+        output_shape = (np.prod(input_shape),)
+
+        stack_input_shape = self._current_stack[stack_input_index]
+        assert stack_input_shape == input_shape
+
+        self._add_layer(
+            LayerType.FLATTEN,
+            input_shape,
+            output_shape,
+            (stack_input_index,),
+            stack_output_index)
+
     def add_dense_layer(self,
                         input_shape,
                         output_shape,
@@ -141,6 +155,12 @@ class ConvertedNN:
             "weight": w_index,
             "bias": b_index
         }
+
+        stack_input_shape = self._current_stack[stack_input_index]
+        assert stack_input_shape == input_shape
+        assert weight.shape[1] == input_shape[0]
+        assert output_shape[0] == weight.shape[0]
+        assert bias.shape[0] == weight.shape[0]
         
         self._add_layer(
             LayerType.DENSE,
@@ -167,7 +187,10 @@ class ConvertedNN:
                        output_shape,
                        stack_input_index,
                        stack_output_index):
-        
+        stack_input_shape = self._current_stack[stack_input_index]
+        assert stack_input_shape == input_shape
+        assert output_shape == input_shape
+
         self._add_layer(
             LayerType.RELU,
             input_shape,
@@ -248,9 +271,8 @@ class ConvertedNN:
     
     def get_execution_info(self):
         # information needed to write verilog for all the layers
-        return copy.deepcopy(self._execution_info)
+        return copy.deepcopy(self.execution_info)
 
     def emulate_nn(self, input_data):
         pass
-    
     
