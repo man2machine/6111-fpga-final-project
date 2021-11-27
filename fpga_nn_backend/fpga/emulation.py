@@ -12,33 +12,70 @@ References:
 https://oneapi-src.github.io/oneDNN/dev_guide_understanding_memory_formats.html
 https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
 https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html#torch.nn.Conv2d
+
+Based on 6.825
+Lecture 5 slide 14, 25, 32
+Lecture 6 slide 8, 32, 34
+Lecture 7 slide 14
+Lecture 8 slide 23
 """
 
 # =============================================================================
 # Parameters
 # =============================================================================
 
+# Global params
+BRAM_SIZE = 2**19 # size in bytes
 DATA_BOUNDS = (-128, 127) # 8 bit signed
 
-MAC_TOTAL_SIZE = 72
-MAC_WAYS = 8
-MAC_INNER_SUM_SIZE = MAC_TOTAL_SIZE / MAC_WAYS
+# mac params
+NUM_MACS = 12
+MAC_LANES = 8
 
-BRAM_SIZE = 2**19 # size in bytes
-BRAM_BANKS = 128
-BRAM_BANKS_LOG2 = 7
-BRAM_BANK_SIZE = int(BRAM_SIZE / BRAM_BANKS)
-
+# implementation params
+BRAM_BANKS_PARAMETERS = 1
+BRAM_BANKS_SCRATCHPAD = 128
 BRAM_STACK_SIZE = 64
-
-class FPGAEmulator:
-    pass
 
 # =============================================================================
 # Emulation
 # =============================================================================
 
-bram = {}
+class FPGAEmulator:
+    pass
+
+class BRAMEmulator:
+    def __init__(self, size):
+        self.size = size
+        self.bram = {}
+        self.banks = []
+        self.last_bank_end = 0
+    
+    def read(self, addr):
+        return self.bram.get(addr, 0)
+    
+    def write(self, addr, val):
+        assert DATA_BOUNDS[0] <= val <= DATA_BOUNDS[1]
+        self.bram[addr] = val
+    
+    def allocate_bank(self, size, init_vals=None):
+        if init_vals is not None:
+            assert len(init_vals) == size
+        bounds = (self.last_bank_end, self.last_bank_end + size - 1)
+        self.last_bank_end = bounds[1] + 1
+        self.banks.append(bounds)
+        if init_vals is not None:
+            for i in range(size):
+                val = init_vals[i]
+                addr = i + bounds[0]
+                self.write(addr, val)
+    
+    def write_bank(self, bank, addr, val):
+        assert 0 <= bank < self.len(self.banks)
+        bounds = self.banks[bank]
+        assert 0 <= addr <= (bounds[1] - bounds[0])
+        addr = bounds[0] + addr
+        self.write(addr, val)
 
 # =============================================================================
 # Variables
@@ -47,33 +84,9 @@ bram = {}
 bram_stack = {
     'addrs': [0]*BRAM_STACK_SIZE,
     'next': 0
-    }
+}
 
 layer_config = 0
-
-# =============================================================================
-# BRAM
-# =============================================================================
-
-def bram_read(addr):
-    return bram.get(addr, 0)
-
-def bram_write(addr, val):
-    assert DATA_BOUNDS[0] <= val <= DATA_BOUNDS[1]
-    bram[addr] = val
-
-def bram_bank_read(bank, addr):
-    assert 0 <= bank < BRAM_BANKS
-    addr = addr + bank * BRAM_BANK_SIZE
-    return bram_read(addr)
-
-def bram_bank_write(bank, addr, val):
-    assert 0 <= bank < BRAM_BANKS
-    addr = addr + bank * BRAM_BANK_SIZE
-    return bram_write(addr, val)
-
-def compute_per_bram_bank(total_size):
-    return (total_size >> BRAM_BANKS_LOG2) + 1
 
 # =============================================================================
 # Iterators
@@ -138,48 +151,48 @@ bfs_iterators = {
 # Initialization Utilities
 # =============================================================================
 
-def store_linear_weight(weight, shape, addr):
+def store_linear_weight(bram, weight, shape, addr, start_bank):
     assert len(shape) == 2
     O, I = shape
     b = 0
     offset = 0
     for o, i in serial_iterator_2d(shape):
-        bram_bank_write(b, addr + offset, weight[o, i])
-        b = (b + 1) % BRAM_BANKS
-        if b == BRAM_BANKS - 1:
+        bram.bank_write(b + start_bank, addr + offset, weight[o, i])
+        b = (b + 1) % BRAM_BANKS_PARAMETERS
+        if b == BRAM_BANKS_PARAMETERS - 1:
             offset = offset + 1
 
-def store_linear_bias(bias, shape, addr):
+def store_linear_bias(bram, bias, shape, addr, start_bank):
     assert len(shape) == 1
     O, = shape
     b = 0
     offset = 0
     for o, in serial_iterator_1d(shape):
-        bram_bank_write(b, addr + offset, bias[o])
-        b = (b + 1) % BRAM_BANKS
-        if b == BRAM_BANKS - 1:
+        bram.bank_write(b + start_bank, addr + offset, bias[o])
+        b = (b + 1) % BRAM_BANKS_PARAMETERS
+        if b == BRAM_BANKS_PARAMETERS - 1:
             offset = offset + 1
 
-def store_conv_weight(weight, shape, addr):
+def store_conv_weight(bram, weight, shape, addr, start_bank):
     assert len(shape) == 4
     O, I, H, W = shape
     b = 0
     offset = 0
     for o, i, h, w in serial_iterator_4d(shape):
-        bram_bank_write(b, addr + offset, weight[o, i, h, w])
-        b = (b + 1) % BRAM_BANKS
-        if b == BRAM_BANKS - 1:
+        bram.bank_write(b + start_bank, addr + offset, weight[o, i, h, w])
+        b = (b + 1) % BRAM_BANKS_PARAMETERS
+        if b == BRAM_BANKS_PARAMETERS - 1:
             offset = offset + 1
 
-def store_conv_bias(bias, shape, addr):
+def store_conv_bias(bram, bias, shape, addr, start_bank):
     assert len(shape) == 1
     O, = shape
     b = 0
     offset = 0
     for o, in serial_iterator_1d(shape):
-        bram_bank_write(b, addr + offset, bias[o])
-        b = (b + 1) % BRAM_BANKS
-        if b == BRAM_BANKS - 1:
+        bram.bank_write(b + start_bank, addr + offset, bias[o])
+        b = (b + 1) % BRAM_BANKS_PARAMETERS
+        if b == BRAM_BANKS_PARAMETERS - 1:
             offset = offset + 1
 
 # =============================================================================
@@ -214,29 +227,175 @@ def load_conv_layer_value(addr, shape, c, h, w):
 # MAC
 # =============================================================================
 
-def mac_product():
-    pass
+def mac(w_in, i_in, b_in):
+    o_out = [0] * MAC_LANES
+    for i in range(MAC_LANES):
+        o_out[i] = w_in[i] * i_in[i] + b_in[i]
+    return o_out
 
-def mac_sum_reduce():
-    pass
-
-def mac():
-    pass
 
 # =============================================================================
 # Serializers & Deserializer
 # =============================================================================
 
-def linear_serialize():
+"""
+def linear_loop(
+    M,
+    CHW,
+    input_addr,
+    weight_addr,
+    bias_addr,
+    output_addr):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_w = [(0, 0)]*MAC_LANES
+    addrs_b = [(0, 0)]*MAC_LANES
+    addrs_i = [(0, 0)]*MAC_LANES
+    addrs_o = [(0, 0)]*MAC_LANES
+    
+    bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
+
+    num_level_1 = (M // MAC_LANES) + 1
+    for m1 in range(num_level_1):
+        for chw in range(CHW):
+            # parallel loop for MAC - start
+
+            # input
+            for m0, addr in enumerate(range(chw, chw + MAC_LANES)):
+                addrs_i[m0] = (addr + input_addr, bank_i)
+            bank_i = (bank_i + 1) % BRAM_BANKS_SCRATCHPAD
+
+            m1L = m1*MAC_LANES
+            for m0, addr in enumerate(m1L, m1L + MAC_LANES):
+                # output
+                addrs_o[m0] = (addr + output_addr, bank_o)
+                bank_o = (bank_o + 1) % BRAM_BANKS_SCRATCHPAD
+
+                # bias
+                addrs_b[m0] = (addr + bias_addr, bank_b)
+                bank_b = (bank_b + 1) % BRAM_BANKS_PARAMETERS
+
+            # weight
+            CHW_m1L_m0 = m1L
+            for m0 in range(MAC_LANES):
+                addrs_w[m0] = (CHW_m1L_m0 + chw + weight_addr, bank_w)
+                bank_w = (bank_w + CHW) % BRAM_BANKS_PARAMETERS
+                CHW_m1L_m0 += CHW
+            
+            # parallel loop for MAC - end
+            
+            bank_w = (bank_w + 1) % BRAM_BANKS_PARAMETERS
+
+            yield (addrs_i, addrs_w, addrs_b, addrs_o)
+"""
+
+def linear_loop2(
+    M,
+    CHW,
+    input_addr,
+    weight_addr,
+    bias_addr,
+    output_addr):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+    
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_w = [(0, 0)]*MAC_LANES
+    addrs_b = [(0, 0)]*MAC_LANES
+    addrs_i = [(0, 0)]*MAC_LANES
+    addrs_o = [(0, 0)]*MAC_LANES
+
+    bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
+
+    num_level_1 = (M // MAC_LANES) + 1
+    for m1 in range(num_level_1):
+        for chw in range(CHW):
+            # parallel loop for MAC - start
+
+            m1L = m1*MAC_LANES
+            CHW_m1L_m0 = m1*MAC_LANES
+            for m0 in range(MAC_LANES):
+                # input
+                addrs_i[m0] = (chw + input_addr, bank_i)
+                
+                # output
+                addrs_o[m0] = (m1L + m0 + output_addr, bank_o)
+                bank_o = (bank_o + 1) % BRAM_BANKS_SCRATCHPAD
+
+                # bias
+                addrs_b[m0] = (m1L + m0 + bias_addr, bank_b)
+                bank_b = (bank_b + 1) % BRAM_BANKS_PARAMETERS
+
+                # weight
+                addrs_w[m0] = (CHW_m1L_m0 + chw + weight_addr, bank_w)
+                bank_w = (bank_w + CHW) % BRAM_BANKS_PARAMETERS
+                CHW_m1L_m0 += CHW
+                
+            yield (addrs_i, addrs_w, addrs_b, addrs_o)
+            
+            # parallel loop for MAC - end
+            
+            bank_i = (bank_i + 1) % BRAM_BANKS_SCRATCHPAD
+            bank_w = (bank_w + 1) % BRAM_BANKS_PARAMETERS
+
+"""
+def linear_loop3(
+    M,
+    CHW,
+    input_addr,
+    weight_addr,
+    bias_addr,
+    output_addr):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+
+    # addrs_* are tuples of (addr in bram, bram bank)
+    
+    bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
+
+    for m in range(M):
+        # output
+        addrs_o = (m + output_addr, bank_o)
+        bank_o = (bank_o + 1) % BRAM_BANKS_SCRATCHPAD
+
+        # bias
+        addrs_b = (m + bias_addr, bank_b)
+        bank_b = (bank_b + 1) % BRAM_BANKS_PARAMETERS
+
+        CHWm = 0
+        for chw in range(CHW):
+            # input
+            addrs_i = (chw + input_addr, bank_i)
+            bank_i = (bank_i + 1) % BRAM_BANKS_SCRATCHPAD
+
+            # weight
+            addrs_w = (CHWm + chw + weight_addr, bank_w)
+            bank_w = (bank_w + 1) % BRAM_BANKS_PARAMETERS
+            
+            yield (addrs_i, addrs_w, addrs_b, addrs_o)            
+         
+        bank_w = (bank_w + CHW) % BRAM_BANKS_PARAMETERS
+        CHWm += CHW
+"""
+
+def conv_loop():
     pass
 
-def linear_deserialize():
+def sum_loop():
     pass
 
-def conv_serialize():
-    pass
-
-def conv_deserialize():
+def flatten_loop():
     pass
 
 # =============================================================================

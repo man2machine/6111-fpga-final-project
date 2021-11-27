@@ -5,6 +5,7 @@ Created on Sat Nov 20 17:35:25 2021
 @author: Shahir
 """
 
+import math
 import copy
 from enum import Enum
 
@@ -58,7 +59,8 @@ class ConvertedNN:
                    output_shape,
                    stack_input_indices,
                    stack_output_index,
-                   parameters=None):
+                   parameters=None,
+                   metadata=None):
         """
         Each layer is a node in the DAG with incoming edges according
         to the input indices, and the output index can be anything.
@@ -100,7 +102,8 @@ class ConvertedNN:
             'output_shape': output_shape,
             'stack_input_indices': stack_input_indices,
             'stack_output_index': stack_output_index,
-            'parameters': parameters
+            'parameters': parameters,
+            'metadata': metadata
         }
         
         # perform the stack add, and remove all elements after
@@ -144,23 +147,30 @@ class ConvertedNN:
                         stack_input_index,
                         stack_output_index,
                         weight,
-                        bias):
+                        bias=None):
         assert len(weight.shape) == 2
-        assert len(bias.shape) == 1
+        if bias is not None:
+            assert len(bias.shape) == 1
         
-        w_index = self._add_parameter(weight)
-        b_index = self._add_parameter(bias)
-        
-        parameters = {
-            "weight": w_index,
-            "bias": b_index
-        }
-
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
         assert weight.shape[1] == input_shape[0]
         assert output_shape[0] == weight.shape[0]
-        assert bias.shape[0] == weight.shape[0]
+        if bias is not None:
+            assert bias.shape[0] == weight.shape[0]
+        
+        w_index = self._add_parameter(weight)
+        if bias is not None:
+            b_index = self._add_parameter(bias)
+        
+        parameters = {
+            "weight": w_index
+        }
+        if bias is not None:
+            parameters['bias'] = b_index
+        metadata = {
+            'has_bias': bias is not None
+        }
         
         self._add_layer(
             LayerType.DENSE,
@@ -168,8 +178,8 @@ class ConvertedNN:
             output_shape,
             (stack_input_index,),
             stack_output_index,
-            parameters)
-        
+            parameters,
+            metadata)
     
     def add_conv_layer(self,
                        input_shape,
@@ -178,18 +188,50 @@ class ConvertedNN:
                        stack_output_index,
                        groups,
                        weight,
-                       bias):
+                       bias=None):
         assert len(weight.shape) == 4
-        assert len(bias.shape) == 1
-    
+        if bias is not None:
+            assert len(bias.shape) == 1
+        
+        stack_input_shape = self._current_stack[stack_input_index]
+        assert stack_input_shape == input_shape
+
+        
+
+        assert weight.shape[1] == input_shape[0]
+        assert output_shape[0] == weight.shape[0]
+        if bias is not None:
+            assert bias.shape[0] == weight.shape[0]
+        
+        w_index = self._add_parameter(weight)
+        if bias is not None:
+            b_index = self._add_parameter(bias)
+        
+        parameters = {
+            "weight": w_index
+        }
+        if bias is not None:
+            parameters['bias'] = b_index
+        metadata = {
+            'has_bias': bias is not None
+        }
+        
+        self._add_layer(
+            LayerType.DENSE,
+            input_shape,
+            output_shape,
+            (stack_input_index,),
+            stack_output_index,
+            parameters,
+            metadata)
+        
     def add_relu_layer(self,
                        input_shape,
-                       output_shape,
                        stack_input_index,
                        stack_output_index):
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
-        assert output_shape == input_shape
+        output_shape = input_shape
 
         self._add_layer(
             LayerType.RELU,
@@ -200,14 +242,21 @@ class ConvertedNN:
     
     def add_relu6_layer(self,
                         input_shape,
-                        output_shape,
                         stack_input_index,
                         stack_output_index):
-        pass
+        stack_input_shape = self._current_stack[stack_input_index]
+        assert stack_input_shape == input_shape
+        output_shape = input_shape
+
+        self._add_layer(
+            LayerType.RELU6,
+            input_shape,
+            output_shape,
+            (stack_input_index,),
+            stack_output_index)
     
     def add_sum_layer(self,
                       input_shape,
-                      output_shape,
                       stack_input_index1,
                       stack_input_index2,
                       stack_output_index):
@@ -239,40 +288,72 @@ class ConvertedNN:
         
         return param_datas
     
-    def generate_parameter_coe(self, num_banks):
-        if num_banks != 1:
-            raise NotImplementedError()
-        
-        # in future, utilize function below
-
-        param_datas = self.generate_parameter_data()
-        total_weight_data = b'\xff' + b''.join(param_datas)
-        bin_str_data = bin(int.from_bytes(total_weight_data, byteorder='big'))
-        bin_str_data = bin_str_data[10:]
-        bin_str_data = [bin_str_data[i:i+8] for i in range(0, len(bin_str_data), 8)]
-        bin_str_data = "\n".join(bin_str_data)
-        
-        return COE_INIT + bin_str_data
-    
     def generate_parameter_bank_info(self, num_banks):
-        raise NotImplementedError()
-        
-        param_datas = self.generate_parameter_data()
         # generate bytes data for each BRAM bank
         # generate start addr for each weight in each BRAM bank
         # output any other necessary information so that we can create the verilog easily
 
+        bank_alloc_len_per_param = []
+        datas_per_param_per_bank = []
+        for param in self.weight_storage_info['parameters']:
+            datas_per_bank = [bytearray() for _ in range(num_banks)]
+            param_uint8 = param.astype(np.uint8)
+            if self._iteration_strategy == IterationStrategy.SERIAL:
+                iterator = serial_iterators[param.ndim](param.shape)
+            else:
+                raise NotImplementedError()
+                serial_axes = NotImplemented
+                iterator = bfs_iterators[param.ndim](param.shape, serial_axes)
+            b = 0
+            for ind in iterator:
+                b = (b + 1) % num_banks
+                v = param_uint8[ind]
+                datas_per_bank[b].append(v)
+            
+            max_bank_len = max(len(n) for n in datas_per_bank)
+            for b in range(num_banks):
+                left = b'\x00'*(max_bank_len - len(datas_per_bank[b]))
+                datas_per_bank[b] = bytes(datas_per_bank[b]) + left
+            bank_alloc_len_per_param.append(max_bank_len)
+            datas_per_param_per_bank.append(datas_per_bank)
+        
+        param_start_addrs = [0] + np.cumsum(bank_alloc_len_per_param).tolist()[:-1]
         info = {
-            'num_params': None,
-            'param_start_addrs': [],
-            'data_per_bank': [],
-            'iteration_strategy': None
+            'num_params': len(self.weight_storage_info['parameters']),
+            'bank_alloc_len_per_param': bank_alloc_len_per_param,
+            'param_start_addrs': param_start_addrs,
+            'datas_per_param_per_bank': datas_per_param_per_bank,
+            'iteration_strategy': self._iteration_strategy
         }
+
+        return info
+    
+    def generate_parameter_coe(self, num_banks=1, info=None):
+        if info is None:
+            info = self.generate_parameter_bank_info(num_banks)
+        
+        coe_datas = []
+        for b in range(num_banks):
+            bank_data = b''.join(info['datas_per_param_per_bank'][p][b] for p in range(info['num_params']))
+            bin_str_data = bin(int.from_bytes(b'\xff' + bank_data, byteorder='big'))
+            bin_str_data = bin_str_data[10:]
+            bin_str_data = [bin_str_data[i:i+8] for i in range(0, len(bin_str_data), 8)]
+            bin_str_data = ",\n".join(bin_str_data) + ";"
+            coe_datas.append(COE_INIT + bin_str_data)
+        
+        return coe_datas
     
     def get_execution_info(self):
         # information needed to write verilog for all the layers
         return copy.deepcopy(self.execution_info)
 
     def emulate_nn(self, input_data):
+        for _ in range(0):
+            if layer_type == LayerType.DENSE:
+                pass
+            elif layer_type == LayerType.FLATTEN:
+                pass
+    
+    def generate_verilog(self):
         pass
     

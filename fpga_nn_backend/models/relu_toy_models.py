@@ -20,7 +20,7 @@ class ReLUToyModel(nn.Module):
             layers.append(nn.Linear(prev_dim, next_dim, bias=bias))
             layers.append(nn.ReLU(inplace=True))
             prev_dim = next_dim
-        layers.append(nn.Linear(prev_dim, output_dim))
+        layers.append(nn.Linear(prev_dim, output_dim, bias=bias))
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
