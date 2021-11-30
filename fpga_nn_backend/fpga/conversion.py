@@ -7,13 +7,14 @@ Created on Sat Nov 20 17:35:25 2021
 
 import math
 import copy
-from enum import Enum
 
 import numpy as np
 
 from fpga_nn_backend.fpga.emulation import (
     serial_iterators,
-    bfs_iterators
+    bfs_iterators,
+    LayerType,
+    IterationStrategy
     )
 
 COE_INIT = """\
@@ -24,18 +25,6 @@ memory_initialization_vector=
 def get_bin_string(x):
     raw = bin(x)[2:]
     return raw.zfill(8)
-
-class LayerType(Enum):
-    DENSE = 0
-    CONV = 1
-    RELU = 2
-    RELU6 = 3
-    SUM = 4
-    FLATTEN = 5
-
-class IterationStrategy(Enum):
-    SERIAL = 0
-    ADVANCED = 1
 
 class ConvertedNN:
     def __init__(self, input_shape):
@@ -195,9 +184,6 @@ class ConvertedNN:
         
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
-
-        
-
         assert weight.shape[1] == input_shape[0]
         assert output_shape[0] == weight.shape[0]
         if bias is not None:
@@ -268,6 +254,10 @@ class ConvertedNN:
     
     def finalize(self):
         self._frozen = True
+    
+    def get_execution_info(self):
+        # information needed to write verilog for all the layers
+        return copy.deepcopy(self.execution_info)
     
     def generate_parameter_data(self):
         param_datas = []
@@ -342,17 +332,6 @@ class ConvertedNN:
             coe_datas.append(COE_INIT + bin_str_data)
         
         return coe_datas
-    
-    def get_execution_info(self):
-        # information needed to write verilog for all the layers
-        return copy.deepcopy(self.execution_info)
-
-    def emulate_nn(self, input_data):
-        for _ in range(0):
-            if layer_type == LayerType.DENSE:
-                pass
-            elif layer_type == LayerType.FLATTEN:
-                pass
     
     def generate_verilog(self):
         pass

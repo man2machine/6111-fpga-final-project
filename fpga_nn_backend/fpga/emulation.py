@@ -5,6 +5,9 @@ Created on Sat Nov 13 23:17:17 2021
 @author: Shahir
 """
 
+import math
+from enum import Enum
+
 import numpy as np
 
 """
@@ -18,6 +21,9 @@ Lecture 5 slide 14, 25, 32
 Lecture 6 slide 8, 32, 34
 Lecture 7 slide 14
 Lecture 8 slide 23
+
+Each class or top level funciton represents a module,
+function is preferred and classes used only when needed
 """
 
 # =============================================================================
@@ -33,9 +39,21 @@ NUM_MACS = 12
 MAC_LANES = 8
 
 # implementation params
-BRAM_BANKS_PARAMETERS = 1
-BRAM_BANKS_SCRATCHPAD = 128
+BRAM_BANKS_PARAMETERS = 1 # prime number
+BRAM_BANKS_SCRATCHPAD = 101 # prime number
 BRAM_STACK_SIZE = 64
+
+class LayerType(Enum):
+    DENSE = 0
+    CONV = 1
+    RELU = 2
+    RELU6 = 3
+    SUM = 4
+    FLATTEN = 5
+
+class IterationStrategy(Enum):
+    SERIAL = 0
+    ADVANCED = 1
 
 # =============================================================================
 # Emulation
@@ -63,30 +81,64 @@ class BRAMEmulator:
             assert len(init_vals) == size
         bounds = (self.last_bank_end, self.last_bank_end + size - 1)
         self.last_bank_end = bounds[1] + 1
+        bank_index = len(self.banks)
         self.banks.append(bounds)
         if init_vals is not None:
             for i in range(size):
                 val = init_vals[i]
                 addr = i + bounds[0]
                 self.write(addr, val)
+        
+        return bank_index
+    
+    def read_bank(self, bank, addr):
+        assert 0 <= bank < self.len(self.banks)
+        bounds = self.banks[bank]
+        assert 0 <= addr <= (bounds[1] - bounds[0])
+        addr = bounds[0] + addr
+
+        return self.read(addr)
     
     def write_bank(self, bank, addr, val):
         assert 0 <= bank < self.len(self.banks)
         bounds = self.banks[bank]
         assert 0 <= addr <= (bounds[1] - bounds[0])
         addr = bounds[0] + addr
-        self.write(addr, val)
 
-# =============================================================================
-# Variables
-# =============================================================================
+        return self.write(addr, val)
+    
+    def rw_cycle_bank(self, read_addrs, write_addrs):
+        assert len(read_addrs) == len(write_addrs) == len(self.banks)
 
-bram_stack = {
-    'addrs': [0]*BRAM_STACK_SIZE,
-    'next': 0
-}
+        read_outs = [0] * len(self.banks)
+        for i in range(len(self.banks)):
+            read_outs[i] = self.read_bank(read_addrs[i])
+            self.write_bank(write_addrs[i])
+        
+        return read_outs
 
-layer_config = 0
+class BRAMStack:
+    def __init__(self, stack_size=16):
+        self.stack_addrs = [0] * (stack_size + 1)
+        self.stack_next = 0
+        self.stack_size = stack_size
+    
+    def add(self, alloc_size):
+        # returns allocation start addr
+        if self.stack_next == 0:
+            last_addr = 0
+        else:
+            last_addr = self.stack_addrs[self.stack_next - 1]
+        self.stack_addrs[self.stack_next] = last_addr + alloc_size
+        self.stack_next += 1
+
+    def bram_stack_top_remove(self):
+        if self.stack_next > 0:
+            self.stack_next -= 1
+
+    def bram_stack_top_move(self, end_index):
+        assert end_index < self.stack_next
+        pass
 
 # =============================================================================
 # Iterators
@@ -196,133 +248,53 @@ def store_conv_bias(bram, bias, shape, addr, start_bank):
             offset = offset + 1
 
 # =============================================================================
-# Main bram accessing interface
-# =============================================================================
-
-def load_linear_weight_value(addr, shape, o, i):
-    assert len(shape) == 2
-
-def load_linear_bias_value(addr, shape, o):
-    assert len(shape) == 1
-
-def store_linear_layer_value(addr, shape, w):
-    assert len(shape) == 1
-    
-def load_linear_layer_value(addr, shape, w):
-    assert len(shape) == 1
-    
-def load_conv_weight_value(addr, shape, o, i, h, w):
-    assert len(shape) == 4
-
-def load_conv_bias_value(addr, shape, o):
-    assert len(shape) == 1
-
-def store_conv_layer_value(addr, shape, c, h, w):
-    assert len(shape) == 3
-    
-def load_conv_layer_value(addr, shape, c, h, w):
-    assert len(shape) == 3
-
-# =============================================================================
 # MAC
 # =============================================================================
 
-def mac(w_in, i_in, b_in):
-    o_out = [0] * MAC_LANES
-    for i in range(MAC_LANES):
+def mac(w_in, i_in, b_in, mac_lanes=MAC_LANES):
+    o_out = [0] * mac_lanes
+    for i in range(mac_lanes):
         o_out[i] = w_in[i] * i_in[i] + b_in[i]
     return o_out
-
 
 # =============================================================================
 # Serializers & Deserializer
 # =============================================================================
 
-"""
 def linear_loop(
     M,
     CHW,
+    M1,
     input_addr,
     weight_addr,
     bias_addr,
-    output_addr):
+    output_addr,
+    mac_lanes=MAC_LANES):
     # Shapes:
     # input: (CHW,)
     # weight: (M, CHW)
     # bias: (M,)
     # output: (M,)
-
-    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
-    addrs_w = [(0, 0)]*MAC_LANES
-    addrs_b = [(0, 0)]*MAC_LANES
-    addrs_i = [(0, 0)]*MAC_LANES
-    addrs_o = [(0, 0)]*MAC_LANES
     
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_w = [(0, 0)]*mac_lanes
+    addrs_b = [(0, 0)]*mac_lanes
+    addrs_i = [(0, 0)]*mac_lanes
+    addrs_o = [(0, 0)]*mac_lanes
+
     bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
 
-    num_level_1 = (M // MAC_LANES) + 1
-    for m1 in range(num_level_1):
+    assert mac_lanes < BRAM_BANKS_SCRATCHPAD
+    assert M1 == math.ceil(M / mac_lanes)
+    CHW_M0 = CHW * MAC_LANES
+    m1L = 0
+    for m1 in range(M1):
         for chw in range(CHW):
             # parallel loop for MAC - start
 
-            # input
-            for m0, addr in enumerate(range(chw, chw + MAC_LANES)):
-                addrs_i[m0] = (addr + input_addr, bank_i)
-            bank_i = (bank_i + 1) % BRAM_BANKS_SCRATCHPAD
-
-            m1L = m1*MAC_LANES
-            for m0, addr in enumerate(m1L, m1L + MAC_LANES):
-                # output
-                addrs_o[m0] = (addr + output_addr, bank_o)
-                bank_o = (bank_o + 1) % BRAM_BANKS_SCRATCHPAD
-
-                # bias
-                addrs_b[m0] = (addr + bias_addr, bank_b)
-                bank_b = (bank_b + 1) % BRAM_BANKS_PARAMETERS
-
-            # weight
+            # m1L = m1 * mac_lanes
             CHW_m1L_m0 = m1L
-            for m0 in range(MAC_LANES):
-                addrs_w[m0] = (CHW_m1L_m0 + chw + weight_addr, bank_w)
-                bank_w = (bank_w + CHW) % BRAM_BANKS_PARAMETERS
-                CHW_m1L_m0 += CHW
-            
-            # parallel loop for MAC - end
-            
-            bank_w = (bank_w + 1) % BRAM_BANKS_PARAMETERS
-
-            yield (addrs_i, addrs_w, addrs_b, addrs_o)
-"""
-
-def linear_loop2(
-    M,
-    CHW,
-    input_addr,
-    weight_addr,
-    bias_addr,
-    output_addr):
-    # Shapes:
-    # input: (CHW,)
-    # weight: (M, CHW)
-    # bias: (M,)
-    # output: (M,)
-    
-    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
-    addrs_w = [(0, 0)]*MAC_LANES
-    addrs_b = [(0, 0)]*MAC_LANES
-    addrs_i = [(0, 0)]*MAC_LANES
-    addrs_o = [(0, 0)]*MAC_LANES
-
-    bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
-
-    num_level_1 = (M // MAC_LANES) + 1
-    for m1 in range(num_level_1):
-        for chw in range(CHW):
-            # parallel loop for MAC - start
-
-            m1L = m1*MAC_LANES
-            CHW_m1L_m0 = m1*MAC_LANES
-            for m0 in range(MAC_LANES):
+            for m0 in range(mac_lanes):
                 # input
                 addrs_i[m0] = (chw + input_addr, bank_i)
                 
@@ -338,58 +310,66 @@ def linear_loop2(
                 addrs_w[m0] = (CHW_m1L_m0 + chw + weight_addr, bank_w)
                 bank_w = (bank_w + CHW) % BRAM_BANKS_PARAMETERS
                 CHW_m1L_m0 += CHW
-                
+            
+            bank_o = (bank_o - mac_lanes) % BRAM_BANKS_SCRATCHPAD
+            bank_b = (bank_b - mac_lanes) % BRAM_BANKS_SCRATCHPAD
+            bank_w = (bank_w - CHW_M0) % BRAM_BANKS_SCRATCHPAD
+            
             yield (addrs_i, addrs_w, addrs_b, addrs_o)
             
             # parallel loop for MAC - end
             
             bank_i = (bank_i + 1) % BRAM_BANKS_SCRATCHPAD
             bank_w = (bank_w + 1) % BRAM_BANKS_PARAMETERS
+        
+        bank_o = (bank_o + mac_lanes) % BRAM_BANKS_SCRATCHPAD
+        bank_b = (bank_b + mac_lanes) % BRAM_BANKS_PARAMETERS
+        m1L += mac_lanes
+        
+            
 
-"""
-def linear_loop3(
+
+def linear_activation_loop(
     M,
     CHW,
+    M1,
     input_addr,
-    weight_addr,
-    bias_addr,
-    output_addr):
+    output_addr,
+    act_lanes=MAC_LANES):
     # Shapes:
     # input: (CHW,)
-    # weight: (M, CHW)
-    # bias: (M,)
     # output: (M,)
-
-    # addrs_* are tuples of (addr in bram, bram bank)
     
-    bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_i = [(0, 0)]*act_lanes
+    addrs_o = [(0, 0)]*act_lanes
 
-    for m in range(M):
-        # output
-        addrs_o = (m + output_addr, bank_o)
-        bank_o = (bank_o + 1) % BRAM_BANKS_SCRATCHPAD
+    bank_i, bank_o = 0, 0
 
-        # bias
-        addrs_b = (m + bias_addr, bank_b)
-        bank_b = (bank_b + 1) % BRAM_BANKS_PARAMETERS
-
-        CHWm = 0
+    assert M1 == math.ceil(M // act_lanes)
+    for m1 in range(M1):
         for chw in range(CHW):
-            # input
-            addrs_i = (chw + input_addr, bank_i)
+            # parallel loop for activation unit - start
+
+            m1L = m1*act_lanes
+            for m0 in range(act_lanes):
+                # input
+                addrs_i[m0] = (chw + input_addr, bank_i)
+                
+                # output
+                addrs_o[m0] = (m1L + m0 + output_addr, bank_o)
+                bank_o = (bank_o + 1) % BRAM_BANKS_SCRATCHPAD
+                
+            yield (addrs_i, addrs_o)
+            
+            # parallel loop for activation unit - end
+            
             bank_i = (bank_i + 1) % BRAM_BANKS_SCRATCHPAD
 
-            # weight
-            addrs_w = (CHWm + chw + weight_addr, bank_w)
-            bank_w = (bank_w + 1) % BRAM_BANKS_PARAMETERS
-            
-            yield (addrs_i, addrs_w, addrs_b, addrs_o)            
-         
-        bank_w = (bank_w + CHW) % BRAM_BANKS_PARAMETERS
-        CHWm += CHW
-"""
-
 def conv_loop():
+    pass
+
+def conv_activation_loop():
     pass
 
 def sum_loop():
@@ -399,36 +379,22 @@ def flatten_loop():
     pass
 
 # =============================================================================
-# BRAM Stack
-# =============================================================================
-
-def bram_stack_add(alloc_size):
-    # returns allocation start addr
-    if bram_stack['next'] == 0:
-        last_addr = 0
-    else:
-        last_addr = bram_stack['addrs'][bram_stack['next'] - 1]
-    bram_stack['addrs'][bram_stack['next']] = last_addr + alloc_size
-    bram_stack['next'] += 1
-
-def bram_stack_top_remove():
-    if bram_stack['next'] > 0:
-        bram_stack['next'] -= 1
-
-def bram_stack_top_move(end_index):
-    assert end_index < bram_stack['next']
-    pass
-
-# =============================================================================
 # Overall FSM
 # =============================================================================
 
-def execute_layer(layer_type,
-                  layer_input_shape,
-                  layer_output_shape,
-                  stack_input_index,
-                  stack_output_index):
-    pass
+class Strategy1Executor:
+    def __init__(self):
+        pass
 
-def overall_fsm():
-    pass
+    def prepare(self, converted_nn):
+        pass
+
+    def execute(self):
+        use_mac = False
+        for _ in range(0):
+            if layer_type == LayerType.DENSE:
+                pass
+            elif layer_type == LayerType.FLATTEN:
+                pass
+    
+
