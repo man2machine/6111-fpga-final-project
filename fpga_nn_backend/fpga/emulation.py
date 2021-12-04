@@ -285,15 +285,17 @@ def linear_loop(
     bank_w, bank_b, bank_i, bank_o = 0, 0, 0, 0
 
     assert mac_lanes < BRAM_BANKS_SCRATCHPAD
+    assert mac_lanes < M
     assert M1 == math.ceil(M / mac_lanes)
     CHW_M0 = CHW * MAC_LANES
     m1L = 0
+    CHW_m1L_m0 = 0
     for m1 in range(M1):
         for chw in range(CHW):
             # parallel loop for MAC - start
 
             # m1L = m1 * mac_lanes
-            CHW_m1L_m0 = m1L
+            # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
             for m0 in range(mac_lanes):
                 # input
                 addrs_i[m0] = (chw + input_addr, bank_i)
@@ -325,9 +327,7 @@ def linear_loop(
         bank_o = (bank_o + mac_lanes) % BRAM_BANKS_SCRATCHPAD
         bank_b = (bank_b + mac_lanes) % BRAM_BANKS_PARAMETERS
         m1L += mac_lanes
-        
-            
-
+        CHW_m1L_m0 += mac_lanes*CHW
 
 def linear_activation_loop(
     M,
