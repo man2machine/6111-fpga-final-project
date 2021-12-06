@@ -35,21 +35,19 @@ BRAM_SIZE = 607500 # size in bytes
 DATA_BOUNDS = (-128, 127) # 8 bit signed
 
 # mac params
-MAC_LANES = 3
-NUM_MACS = 1
+MAC_LANES = 1
 
 # implementation params
 BRAM_STACK_SIZE = 64
 
 class LayerType(Enum):
     DENSE = 0
-    CONV = 1
+    # CONV = 1
     RELU = 2
-    RELU6 = 3
-    SUM = 4
-    FLATTEN = 5
-    MOVE = 6
-    OUTPUT = 7
+    # RELU6 = 3
+    # SUM = 4
+    MOVE = 5
+    OUTPUT = 6
 
 class IterationStrategy(Enum):
     SERIAL = 0
@@ -185,7 +183,6 @@ def relu(o_in, lanes=MAC_LANES):
 
 def linear_layer_init_loop(
     M,
-    CHW,
     bias_addr,
     output_addr):
 
@@ -230,7 +227,6 @@ def linear_layer_mac_loop(
 
 def linear_activation_loop(
     M,
-    CHW,
     output_addr):
     # Shapes:
     # output: (M,)
@@ -252,8 +248,22 @@ def conv_activation_loop():
 def sum_loop():
     pass
 
-def flatten_loop():
-    pass
+def move_loop(
+    N,
+    input_addr,
+    output_addr):
+    # Shapes:
+    # output: (N,)
+    
+    for n in range(N):
+        # input
+        addr_i = n + input_addr
+        # output
+        addr_o = n + output_addr
+            
+        yield (addr_i, addr_o,)
+
+        # o[n] = i[n]
 
 # =============================================================================
 # Overall FSM
@@ -282,27 +292,173 @@ class FPGAEmulator:
     def execute(self, input_data):
         # EMULATION OF RETRIEVING INPUT DATA FROM EXTERNAL SOURCE =============
         # this is not meant to be translated to verilog
-        input_data = input_data.reshape(self.converted_nn.input_shape).astype(np.int8)
-        C, H, W, = input_data.shape
+        input_data = input_data.reshape(self.exec_info['input_shape']).astype(np.int8)
+        iterator = serial_iterators[input_data.ndim](input_data.shape)
         i = 0
-        for c in range(C):
-            for h in range(H):
-                for w in range(W):
-                    self.bram.write_bank(1, i, input_data[i])
-                    i += 1
+        for ind in iterator:
+            self.bram.write_bank(1, i + self.exec_info['inital_input_addr'], input_data[i])
+            i += 1  
         # =====================================================================
 
-        for _ in range(0):
-            if layer_type == LayerType.DENSE:
-                pass
-            elif layer_type == LayerType.MOVE:
-                pass
-            elif layer_type == LayerType.OUTPUT:
-                pass
+        # state variables (logic in verilog)
+        layer_num = 0
+        layer_type = 0
+
+        # addr bases
+        input_base_addr = 0
+        weight_base_addr = 0
+        bias_base_addr = 0
+        output_base_addr = 0
+
+        # sizes
+        m_size = 0
+        chw_size = 0
+        n_size = 0
+
+        # state machine variables per layer
+        linear_layer_step = 0
+        linear_has_bias = 0
+
+        # addrs
+        input_addr = 0
+        weight_addr = 0
+        bias_addr = 0
+        output_addr = 0
+        output_prev_addr = 0
+
+        # layer signals
+        next_layer = 0
+
+        # loop signals
+        loop_ready_out = 0
+        loop_done_out = 0
+        loop_started = 0
+
+        # mac signals
+        use_mac = 0
+        w_mac = [0] * MAC_LANES
+        i_mac = [0] * MAC_LANES
+        b_mac = [0] * MAC_LANES
+        o_mac = [0] * MAC_LANES
+
+        # bram scratchpad
+        bram0_read_addr = 0
+        bram0_read_enable = 0
+        bram0_read_out = 0
+
+        # bram scratchpad
+        bram1_read_enable = 0
+        bram1_read_addr = 0
+        bram1_read_out = 0
+        bram1_write_enable = 0
+        bram1_write_prev_enable = 0
+        bram1_write_addr = 0
+        bram1_write_val = 0
+        bram1_write_prev_val = 0
+        
+        # emulation variable
+        loop = None
+
+        layers = self.exec_info['layers']
+        while True:
+            if use_mac:
+                o_mac = mac(w_mac, i_mac, b_mac)
+            
+            if bram0_read_enable:
+                bram0_read_out = self.bram.read_bank(0, bram0_read_addr)
+            if bram1_read_enable:
+                bram1_read_out = self.bram.read_bank(1, bram0_read_addr)
+            if bram1_write_enable:
+                self.bram.write_bank(1, bram1_write_addr, bram1_write_val)
+            
+            if next_layer:
+                layer_exec_info = layers[layer_num]
+
+                layer_type = layer_exec_info['layer_type']
+                layer_config = layer_exec_info['config']
+
+                # instantiation of the modules
+                if layer_type == LayerType.DENSE:
+                    input_base_addr = layer_config['input_base_addr']
+                    weight_base_addr = layer_config['weight_base_addr']
+                    bias_base_addr = layer_config['bias_base_addr']
+                    output_base_addr = layer_config['output_base_addr']
+
+                    linear_has_bias = layer_config['has_bias']
+                    m_size = layer_config['m_size']
+                    chw_size = layer_config['chw_size']
+                    linear_layer_step = 0 if layer_config['has_bias'] else 1
+
+                elif layer_type == LayerType.MOVE:
+                    input_base_addr = layer_config['input_base_addr']
+                    output_base_addr = layer_config['output_base_addr']
+
+                    n_size = layer_config['n_size']
+
+                elif layer_type == LayerType.OUTPUT:
+                    output_base_addr = layer_config['output_base_addr']
+
+                    n_size = layer_config['n_size']
+                
+                # next layer reset
+                bram_read_addr = 0
+                bram_write_addr = 0
+                bram_read_enable = 0
+                bram_write_enable = 0
+                layer_num = layer_num + 1
+            
+            # execution of the layers
+            elif layer_type == LayerType.DENSE:
+                if linear_layer_step == 0:
+                    if loop_started == 0:
+                        loop = linear_layer_init_loop(
+                            m_size,
+                            bias_base_addr,
+                            output_base_addr)
+                        use_mac = 0
+                    
+                    loop_out = next(loop, None)
+                    if loop_out is not None:
+                        loop_ready_out = 1
+                        bias_addr, output_addr, = loop_out
+                    else:
+                        loop_done_out = 1
+                    
+                    if loop_ready_out:
+                        bram0_read_addr = bias_addr
+                        bram0_read_enable = 1
+                        bram1_write_addr = output_prev_addr
+                        bram1_write_enable = loop_started
+                        bram1_read_enable = 0
+                        bram1_write_val = bram0_read_out
+                        
+                        output_prev_addr = output_addr
+                    
+                    if loop_started == 0:
+                        loop_started = 1
+                
+                if linear_layer_step == 1:
+                    pass
+            
+            
+            
+            
+            
+
+                    
+                    
+
+            
+                    
+
+
+
         
 
         # EMULATION OF SENDING OUTPUT DATA FROM NEURAL NETWORK ================
         # this is not meant to be translated to verilog
-        output_data
+        output_data = [0] * n_size
+        for n in range(n_size):
+            self.bram.read_bank(0, output_base_addr + n)
         # =====================================================================
 

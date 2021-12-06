@@ -7,6 +7,7 @@ Created on Sat Nov 20 17:35:25 2021
 
 import math
 import copy
+from enum import Enum
 
 import numpy as np
 
@@ -24,6 +25,15 @@ memory_initialization_vector=
 def get_bin_string(x):
     raw = bin(x)[2:]
     return raw.zfill(8)
+
+class ConverterLayerType(Enum):
+    DENSE = 0
+    CONV = 1
+    RELU = 2
+    RELU6 = 3
+    SUM = 4
+    FLATTEN = 5
+    OUTPUT = 7
 
 class ConvertedNN:
     def __init__(self, input_shape):
@@ -58,7 +68,7 @@ class ConvertedNN:
         assert not self._frozen
         
         # layer type
-        assert isinstance(layer_type, LayerType)
+        assert isinstance(layer_type, ConverterLayerType)
 
         # parameters maps parameter name to parameter index
         assert parameters is None or isinstance(parameters, dict)
@@ -124,9 +134,10 @@ class ConvertedNN:
 
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
+        assert stack_input_index == stack_output_index
 
         self._add_layer(
-            LayerType.FLATTEN,
+            ConverterLayerType.FLATTEN,
             (input_shape,),
             output_shape,
             (stack_input_index,),
@@ -164,7 +175,7 @@ class ConvertedNN:
         }
         
         self._add_layer(
-            LayerType.DENSE,
+            ConverterLayerType.DENSE,
             (input_shape,),
             output_shape,
             (stack_input_index,),
@@ -206,7 +217,7 @@ class ConvertedNN:
         }
         
         self._add_layer(
-            LayerType.CONV,
+            ConverterLayerType.CONV,
             (input_shape,),
             output_shape,
             (stack_input_index,),
@@ -220,10 +231,11 @@ class ConvertedNN:
                        stack_output_index):
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
+        assert stack_input_index == stack_output_index
         output_shape = input_shape
 
         self._add_layer(
-            LayerType.RELU,
+            ConverterLayerType.RELU,
             (input_shape,),
             output_shape,
             (stack_input_index,),
@@ -235,10 +247,11 @@ class ConvertedNN:
                         stack_output_index):
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
+        assert stack_input_index == stack_output_index
         output_shape = input_shape
 
         self._add_layer(
-            LayerType.RELU6,
+            ConverterLayerType.RELU6,
             (input_shape,),
             output_shape,
             (stack_input_index,),
@@ -256,10 +269,26 @@ class ConvertedNN:
         output_shape = input_shape
 
         self._add_layer(
-            LayerType.SUM,
+            ConverterLayerType.SUM,
             (input_shape, input_shape),
             output_shape,
             (stack_input_index1, stack_input_index2),
+            stack_output_index)
+    
+    def add_output_layer(self,
+                        input_shape,
+                        stack_input_index,
+                        stack_output_index):
+        stack_input_shape = self._current_stack[stack_input_index]
+        assert stack_input_shape == input_shape
+        assert stack_input_index == stack_output_index
+        output_shape = input_shape
+
+        self._add_layer(
+            ConverterLayerType.OUTPUT,
+            (input_shape,),
+            output_shape,
+            (stack_input_index,),
             stack_output_index)
     
     def set_iteration_strategy(self, strategy):
@@ -268,6 +297,7 @@ class ConvertedNN:
     
     def finalize(self):
         self._frozen = True
+        assert self.layers_info['layers'][0]['layer_type'] == LayerType.OUTPUT
     
     def get_layer_info(self):
         # information needed to write verilog for all the layers
@@ -317,15 +347,25 @@ class ConvertedNN:
 
         # start from last layer, go backwards
         for i in range(0, num_layers):
+            # flatten layers do not actually compute anything
             layer_info = self.layers_info['layers'][i] 
             layer_type = layer_info['layer_type']
 
-            if layer_type == LayerType.FLATTEN:
-                pass
+            last_layer = False
+            move_needed = False
+            move_output_index = None
+            move_size = None
 
-            elif layer_type == LayerType.DENSE:
+            if layer_type == ConverterLayerType.FLATTEN:
+                n_size = layer_info['output_shape']
+                input_index = layer_info['stack_input_indices'][0]
+                output_index = layer_info['stack_output_index']
+
+                assert input_index == output_index # move not supported yet with flatten
+
+            elif layer_type == ConverterLayerType.DENSE:
                 layer_exec_info = {
-                    'layer_type': layer_type,
+                    'layer_type': LayerType.DENSE,
                     'config': None
                 }
                 linear_config = {
@@ -348,6 +388,8 @@ class ConvertedNN:
                 if has_bias:
                     bias_param_index = layer_info['parameters']['weight']
                     linear_config['bias_base_addr'] = self._get_param_addr(param_datas, bias_param_index)
+                else:
+                    linear_config['bias_base_addr'] = 0
                 
                 input_index = layer_info['stack_input_indices'][0]
                 output_index = len(layer_stack)
@@ -370,7 +412,7 @@ class ConvertedNN:
                     move_config = {
                         'input_base_addr': input_addr,
                         'output_base_addr': output_addr,
-                        'move_size': linear_config['m_size']
+                        'n_size': linear_config['m_size']
                     }
 
                     layer_stack.insert(final_output_index, linear_config['m_size'])
@@ -379,16 +421,15 @@ class ConvertedNN:
                     layer_exec_info['config'] = move_config
                     exec_layer_infos.append(layer_exec_info)
             
-            elif layer_type == LayerType.RELU:
+            elif layer_type == ConverterLayerType.RELU:
                 layer_exec_info = {
-                    'layer_type': layer_type,
+                    'layer_type': LayerType.RELU,
                     'config': None
                 }
                 relu_config = {
                     'input_base_addr': None,
                     'output_base_addr': None,
                     'n_size': None,
-                    'inplace': None # there for completeness, fpga doesn't need this
                 }
                 
                 act_size = np.prod(layer_info['input_shapes'][0])
@@ -398,32 +439,39 @@ class ConvertedNN:
                 output_index = layer_info['stack_output_index']
                 relu_config['input_base_addr'] = sum([layer_stack[i] for i in range(input_index)])
                 relu_config['output_base_addr'] = sum([layer_stack[i] for i in range(output_index)])
-                relu_config['inplace'] = (input_index == output_index)
+
+                assert input_index == output_index
 
                 layer_exec_info['config'] = relu_config
                 exec_layer_infos.append(layer_exec_info)
 
-            elif layer_type == LayerType.OUTPUT:
+            elif layer_type == ConverterLayerType.OUTPUT:
                 layer_exec_info = {
-                    'layer_type': layer_type,
+                    'layer_type': LayerType.OUTPUT,
                     'config': None
                 }
                 output_config = {
-                    'input_base_addr': None
+                    'output_base_addr': None,
+                    'n_size': None
                 }
 
-                output_config['input_base_addr'] = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
+                output_config['output_base_addr'] = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
+                output_config['n_size'] = np.prod(layer_info['output_shape'])
 
                 layer_exec_info['config'] = output_config
                 exec_layer_infos.append(layer_exec_info)
+                last_layer = True
             
             scratchpad_used = sum(layer_stack)
             if scratchpad_used > scratchpad_size:
                 raise ValueError("Not enough scratpad space")
+
+            if last_layer:
+                break
         
         exec_info = {}
         exec_info['input_shape'] = self.input_shape
-        exec_info['scratchpad_size'] = scratchpad_size
+        exec_info['inital_input_addr'] = 0
         exec_info['layers'] = exec_layer_infos
 
         return exec_info        
