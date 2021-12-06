@@ -87,6 +87,28 @@ class TransformDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
+class AddGaussianNoise:
+    def __init__(self, mean=0., std=1.):
+        self.std = std
+        self.mean = mean
+        
+    def __call__(self, tensor):
+        return tensor + torch.randn(tensor.size()) * self.std + self.mean
+    
+    def __repr__(self):
+        return self.__class__.__name__ + "(mean={0}, std={1})".format(self.mean, self.std)
+
+class Clamp:
+    def __init__(self, min_val=0., max_val=1.):
+        self.min_val = min_val
+        self.max_val = max_val
+        
+    def __call__(self, tensor):
+        return tensor + torch.clamp(tensor, self.min_val, self.max_val)
+    
+    def __repr__(self):
+        return self.__class__.__name__ + "(min={0}, max={1})".format(self.min_val, self.max_val)
+
 def apply_img_transforms(datasets,
                          dataset_type,
                          new_input_size=None,
@@ -94,12 +116,18 @@ def apply_img_transforms(datasets,
                          flatten=False):
     if dataset_type == ImageDatasetType.MNIST:
         train_transform = transforms.Compose([
+            transforms.ColorJitter(brightness=0.4, saturation=0.125),
             transforms.RandomApply([
                 transforms.RandomAffine(degrees=10,
                                         translate=(0.1, 0.1),
                                         scale=(0.9, 1.1),
                                         shear=10)], p=0.9),
-            transforms.ToTensor()])
+            transforms.ToTensor(),
+            AddGaussianNoise(0, 0.1),
+            Clamp(0, 1),
+            torchvision.transforms.Lambda(
+                lambda x: torchvision.transforms.functional.invert(x))
+            ])
     
         test_transform = transforms.Compose([
             transforms.ToTensor()])

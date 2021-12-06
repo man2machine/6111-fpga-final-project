@@ -31,7 +31,7 @@ function is preferred and classes used only when needed
 # =============================================================================
 
 # Global params
-BRAM_SIZE = 2**19 # size in bytes
+BRAM_SIZE = 607500 # size in bytes
 DATA_BOUNDS = (-128, 127) # 8 bit signed
 
 # mac params
@@ -49,7 +49,7 @@ class LayerType(Enum):
     SUM = 4
     FLATTEN = 5
     MOVE = 6
-    INPUT = -1 # not actually used on the FPGA
+    OUTPUT = 7
 
 class IterationStrategy(Enum):
     SERIAL = 0
@@ -103,13 +103,19 @@ class BRAMEmulator:
 
         return self.write(addr, val)
     
-    def rw_cycle_bank(self, read_addrs, write_addrs):
+    def rw_cycle_bank(self, bank, read_addr, write_addr):
+        read_out = self.read_bank(bank, read_addr)
+        self.write_bank(bank, write_addr)
+        
+        return read_out
+    
+    def rw_cycle_banks(self, read_addrs, write_addrs):
         assert len(read_addrs) == len(write_addrs) == len(self.banks)
 
         read_outs = [0] * len(self.banks)
         for i in range(len(self.banks)):
-            read_outs[i] = self.read_bank(read_addrs[i])
-            self.write_bank(write_addrs[i])
+            read_outs[i] = self.read_bank(i, read_addrs[i])
+            self.write_bank(i, write_addrs[i])
         
         return read_outs
 
@@ -205,11 +211,11 @@ def linear_layer_mac_loop(
     # bias: (M,)
     # output: (M,)
 
+    CHWm = 0
     for m in range(M):
         # output
         addr_o = m + output_addr
-
-        CHWm = 0
+        
         for chw in range(CHW):
             # input
             addr_i = chw + input_addr
@@ -235,7 +241,7 @@ def linear_activation_loop(
             
         yield (addr_o,)
 
-        # o[m] = activation(o[m])    
+        # o[m] = activation(o[m])
 
 def conv_loop():
     pass
@@ -253,18 +259,50 @@ def flatten_loop():
 # Overall FSM
 # =============================================================================
 
-class Strategy1Executor:
-    def __init__(self):
-        pass
+class FPGAEmulator:
+    def __init__(self, converted_nn):
+        self.converted_nn = converted_nn
+        self.bram = BRAMEmulator(BRAM_SIZE)
+        weight_data = np.array(list(b''.join(self.converted_nn.generate_parameter_data())), dtype=np.int8)
+        scratchpad_size = BRAM_SIZE - len(weight_data) - 1024
+        
+        self.preparation_info = {
+            'bram_parameters_size': len(weight_data),
+            'bram_scratchpad_size': scratchpad_size,
+            'weight_data': weight_data
+        }
 
-    def prepare(self, converted_nn):
-        pass
+        self.bram.allocate_bank(len(self.preparation_info['weight_data']),
+            init_vals=self.preparation_info['weight_data']) # bank 0
+        self.bram.allocate_bank(self.preparation_info['bram_scratchpad_size']) # bank 1
 
-    def execute(self):
-        use_mac = False
+        self.exec_info = self.converted_nn.generate_execution_info(
+            self.preparation_info['bram_scratchpad_size'])
+
+    def execute(self, input_data):
+        # EMULATION OF RETRIEVING INPUT DATA FROM EXTERNAL SOURCE =============
+        # this is not meant to be translated to verilog
+        input_data = input_data.reshape(self.converted_nn.input_shape).astype(np.int8)
+        C, H, W, = input_data.shape
+        i = 0
+        for c in range(C):
+            for h in range(H):
+                for w in range(W):
+                    self.bram.write_bank(1, i, input_data[i])
+                    i += 1
+        # =====================================================================
+
         for _ in range(0):
             if layer_type == LayerType.DENSE:
                 pass
-            elif layer_type == LayerType.FLATTEN:
+            elif layer_type == LayerType.MOVE:
                 pass
+            elif layer_type == LayerType.OUTPUT:
+                pass
+        
+
+        # EMULATION OF SENDING OUTPUT DATA FROM NEURAL NETWORK ================
+        # this is not meant to be translated to verilog
+        output_data
+        # =====================================================================
 

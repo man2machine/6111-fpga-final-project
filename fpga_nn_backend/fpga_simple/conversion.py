@@ -10,9 +10,8 @@ import copy
 
 import numpy as np
 
-from fpga_nn_backend.fpga.emulation import (
+from fpga_nn_backend.fpga_simple.emulation import (
     serial_iterators,
-    bfs_iterators,
     LayerType,
     IterationStrategy
     )
@@ -29,10 +28,10 @@ def get_bin_string(x):
 class ConvertedNN:
     def __init__(self, input_shape):
         self.input_shape = input_shape
-        self.weight_storage_info = {
+        self.parameters_info = {
             'parameters': []
         }
-        self.execution_info = {
+        self.layers_info = {
             'layers': []
         }
         # tuples containing shape
@@ -44,7 +43,7 @@ class ConvertedNN:
     
     def _add_layer(self,
                    layer_type,
-                   input_shape,
+                   input_shapes,
                    output_shape,
                    stack_input_indices,
                    stack_output_index,
@@ -67,10 +66,12 @@ class ConvertedNN:
             for k, v in parameters.items():
                 assert isinstance(k, str)
                 assert isinstance(v, int)
-                assert 0 <= v < len(self.weight_storage_info['parameters'])
+                assert 0 <= v < len(self.parameters_info['parameters'])
         
         # input and output shape for the layer
-        assert isinstance(input_shape, tuple)
+        assert isinstance(input_shapes, tuple)
+        for t in input_shapes:
+            assert isinstance(t, tuple)
         assert isinstance(output_shape, tuple)
 
         # output stack index, where layer output is dumped in the BRAM
@@ -87,8 +88,9 @@ class ConvertedNN:
         
         layer_info = {
             'layer_type': layer_type,
-            'input_shape': input_shape,
+            'input_shapes': input_shapes,
             'output_shape': output_shape,
+            'output_size': np.prod(output_shape),
             'stack_input_indices': stack_input_indices,
             'stack_output_index': stack_output_index,
             'parameters': parameters,
@@ -100,7 +102,7 @@ class ConvertedNN:
         self._current_stack.insert(stack_output_index, output_shape)
         self._current_stack = self._current_stack[:stack_output_index + 1]
         
-        self.execution_info['layers'].append(layer_info) 
+        self.layers_info['layers'].append(layer_info) 
         
         return layer_info
     
@@ -109,8 +111,8 @@ class ConvertedNN:
         assert not self._frozen
         assert data.dtype == np.int8
         
-        self.weight_storage_info['parameters'].append(data)
-        weight_index = len(self.weight_storage_info) - 1
+        self.parameters_info['parameters'].append(data)
+        weight_index = len(self.parameters_info) - 1
         
         return weight_index
 
@@ -125,7 +127,7 @@ class ConvertedNN:
 
         self._add_layer(
             LayerType.FLATTEN,
-            input_shape,
+            (input_shape,),
             output_shape,
             (stack_input_index,),
             stack_output_index)
@@ -153,7 +155,7 @@ class ConvertedNN:
             b_index = self._add_parameter(bias)
         
         parameters = {
-            "weight": w_index
+            'weight': w_index
         }
         if bias is not None:
             parameters['bias'] = b_index
@@ -163,7 +165,7 @@ class ConvertedNN:
         
         self._add_layer(
             LayerType.DENSE,
-            input_shape,
+            (input_shape,),
             output_shape,
             (stack_input_index,),
             stack_output_index,
@@ -181,10 +183,11 @@ class ConvertedNN:
         assert len(weight.shape) == 4
         if bias is not None:
             assert len(bias.shape) == 1
-        
+
         stack_input_shape = self._current_stack[stack_input_index]
         assert stack_input_shape == input_shape
-        assert weight.shape[1] == input_shape[0]
+
+        assert weight.shape[1] == (input_shape[0] // groups)
         assert output_shape[0] == weight.shape[0]
         if bias is not None:
             assert bias.shape[0] == weight.shape[0]
@@ -194,7 +197,7 @@ class ConvertedNN:
             b_index = self._add_parameter(bias)
         
         parameters = {
-            "weight": w_index
+            'weight': w_index
         }
         if bias is not None:
             parameters['bias'] = b_index
@@ -203,8 +206,8 @@ class ConvertedNN:
         }
         
         self._add_layer(
-            LayerType.DENSE,
-            input_shape,
+            LayerType.CONV,
+            (input_shape,),
             output_shape,
             (stack_input_index,),
             stack_output_index,
@@ -221,7 +224,7 @@ class ConvertedNN:
 
         self._add_layer(
             LayerType.RELU,
-            input_shape,
+            (input_shape,),
             output_shape,
             (stack_input_index,),
             stack_output_index)
@@ -236,7 +239,7 @@ class ConvertedNN:
 
         self._add_layer(
             LayerType.RELU6,
-            input_shape,
+            (input_shape,),
             output_shape,
             (stack_input_index,),
             stack_output_index)
@@ -246,7 +249,18 @@ class ConvertedNN:
                       stack_input_index1,
                       stack_input_index2,
                       stack_output_index):
-        pass
+        stack_input_shape1 = self._current_stack[stack_input_index1]
+        assert stack_input_shape1 == input_shape
+        stack_input_shape2 = self._current_stack[stack_input_index2]
+        assert stack_input_shape2 == input_shape
+        output_shape = input_shape
+
+        self._add_layer(
+            LayerType.SUM,
+            (input_shape, input_shape),
+            output_shape,
+            (stack_input_index1, stack_input_index2),
+            stack_output_index)
     
     def set_iteration_strategy(self, strategy):
         assert isinstance(strategy, IterationStrategy)
@@ -255,21 +269,19 @@ class ConvertedNN:
     def finalize(self):
         self._frozen = True
     
-    def get_execution_info(self):
+    def get_layer_info(self):
         # information needed to write verilog for all the layers
-        return copy.deepcopy(self.execution_info)
+        return copy.deepcopy(self.layers_info)
     
     def generate_parameter_data(self):
         param_datas = []
-        for param in self.weight_storage_info['parameters']:
+        for param in self.parameters_info['parameters']:
             param_uint8 = param.astype(np.uint8)
             param_data = bytearray()
             if self._iteration_strategy == IterationStrategy.SERIAL:
                 iterator = serial_iterators[param.ndim](param.shape)
             else:
                 raise NotImplementedError()
-                serial_axes = NotImplemented
-                iterator = bfs_iterators[param.ndim](param.shape, serial_axes)
             for ind in iterator:
                 v = param_uint8[ind]
                 param_data.append(v)
@@ -278,61 +290,146 @@ class ConvertedNN:
         
         return param_datas
     
-    def generate_parameter_bank_info(self, num_banks):
-        # generate bytes data for each BRAM bank
-        # generate start addr for each weight in each BRAM bank
-        # output any other necessary information so that we can create the verilog easily
-
-        bank_alloc_len_per_param = []
-        datas_per_param_per_bank = []
-        for param in self.weight_storage_info['parameters']:
-            datas_per_bank = [bytearray() for _ in range(num_banks)]
-            param_uint8 = param.astype(np.uint8)
-            if self._iteration_strategy == IterationStrategy.SERIAL:
-                iterator = serial_iterators[param.ndim](param.shape)
-            else:
-                raise NotImplementedError()
-                serial_axes = NotImplemented
-                iterator = bfs_iterators[param.ndim](param.shape, serial_axes)
-            b = 0
-            for ind in iterator:
-                b = (b + 1) % num_banks
-                v = param_uint8[ind]
-                datas_per_bank[b].append(v)
-            
-            max_bank_len = max(len(n) for n in datas_per_bank)
-            for b in range(num_banks):
-                left = b'\x00'*(max_bank_len - len(datas_per_bank[b]))
-                datas_per_bank[b] = bytes(datas_per_bank[b]) + left
-            bank_alloc_len_per_param.append(max_bank_len)
-            datas_per_param_per_bank.append(datas_per_bank)
+    def generate_parameter_coe(self):
+        param_datas = self.generate_parameter_data()
+        total_weight_data = b'\xff' + b''.join(param_datas)
+        bin_str_data = bin(int.from_bytes(total_weight_data, byteorder='big'))
+        bin_str_data = bin_str_data[10:]
+        bin_str_data = [bin_str_data[i:i+8] for i in range(0, len(bin_str_data), 8)]
+        bin_str_data = ",\n".join(bin_str_data) + ";"
         
-        param_start_addrs = [0] + np.cumsum(bank_alloc_len_per_param).tolist()[:-1]
-        info = {
-            'num_params': len(self.weight_storage_info['parameters']),
-            'bank_alloc_len_per_param': bank_alloc_len_per_param,
-            'param_start_addrs': param_start_addrs,
-            'datas_per_param_per_bank': datas_per_param_per_bank,
-            'iteration_strategy': self._iteration_strategy
-        }
-
-        return info
+        return COE_INIT + bin_str_data
     
-    def generate_parameter_coe(self, num_banks=1, info=None):
-        if info is None:
-            info = self.generate_parameter_bank_info(num_banks)
+    def _get_param_addr(self, param_datas, param_index):
+        return sum([len(param_datas[i]) for i in range(param_index)])
+
+    def generate_execution_info(self, scratchpad_size):
+        assert self._frozen
+
+        num_layers = len(self.layers_info['layers'])
+
+        param_datas = self.generate_parameter_data()
+        exec_layer_infos = []
+
+        layer_stack = [
+            np.prod(self.input_shape),
+        ]
+
+        # start from last layer, go backwards
+        for i in range(0, num_layers):
+            layer_info = self.layers_info['layers'][i] 
+            layer_type = layer_info['layer_type']
+
+            if layer_type == LayerType.FLATTEN:
+                pass
+
+            elif layer_type == LayerType.DENSE:
+                layer_exec_info = {
+                    'layer_type': layer_type,
+                    'config': None
+                }
+                linear_config = {
+                    'has_bias': None,
+                    'input_base_addr': None,
+                    'weight_base_addr': None,
+                    'bias_base_addr': None,
+                    'output_base_addr': None,
+                    'm_size': None,
+                    'chw_size': None,
+                }
+                
+                linear_config['m_size'] = layer_info['output_shape'][0]
+                linear_config['chw_size'] = layer_info['input_shapes'][0][0]
+                
+                weight_param_index = layer_info['parameters']['weight']
+                linear_config['weight_base_addr'] = self._get_param_addr(param_datas, weight_param_index)
+
+                has_bias = layer_info['metadata']['has_bias']
+                if has_bias:
+                    bias_param_index = layer_info['parameters']['weight']
+                    linear_config['bias_base_addr'] = self._get_param_addr(param_datas, bias_param_index)
+                
+                input_index = layer_info['stack_input_indices'][0]
+                output_index = len(layer_stack)
+                linear_config['input_base_addr'] = sum([layer_stack[i] for i in range(input_index)])
+                linear_config['output_base_addr']  = sum([layer_stack[i] for i in range(output_index)])
+                layer_stack.append(linear_config['m_size'])
+
+                layer_exec_info['config'] = linear_config
+                exec_layer_infos.append(layer_exec_info)
+
+                final_output_index = layer_info['stack_output_index']
+                if final_output_index < (len(layer_stack) - 1):
+                    input_addr = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
+                    output_addr = sum([layer_stack[i] for i in range(final_output_index)])
+                    assert output_addr < input_addr
+                    layer_exec_info = {
+                        'layer_type': LayerType.MOVE,
+                        'config': None
+                    }
+                    move_config = {
+                        'input_base_addr': input_addr,
+                        'output_base_addr': output_addr,
+                        'move_size': linear_config['m_size']
+                    }
+
+                    layer_stack.insert(final_output_index, linear_config['m_size'])
+                    layer_stack = layer_stack[:final_output_index + 1]
+
+                    layer_exec_info['config'] = move_config
+                    exec_layer_infos.append(layer_exec_info)
+            
+            elif layer_type == LayerType.RELU:
+                layer_exec_info = {
+                    'layer_type': layer_type,
+                    'config': None
+                }
+                relu_config = {
+                    'input_base_addr': None,
+                    'output_base_addr': None,
+                    'n_size': None,
+                    'inplace': None # there for completeness, fpga doesn't need this
+                }
+                
+                act_size = np.prod(layer_info['input_shapes'][0])
+                relu_config['n_size'] = act_size
+
+                input_index = layer_info['stack_input_indices'][0]
+                output_index = layer_info['stack_output_index']
+                relu_config['input_base_addr'] = sum([layer_stack[i] for i in range(input_index)])
+                relu_config['output_base_addr'] = sum([layer_stack[i] for i in range(output_index)])
+                relu_config['inplace'] = (input_index == output_index)
+
+                layer_exec_info['config'] = relu_config
+                exec_layer_infos.append(layer_exec_info)
+
+            elif layer_type == LayerType.OUTPUT:
+                layer_exec_info = {
+                    'layer_type': layer_type,
+                    'config': None
+                }
+                output_config = {
+                    'input_base_addr': None
+                }
+
+                output_config['input_base_addr'] = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
+
+                layer_exec_info['config'] = output_config
+                exec_layer_infos.append(layer_exec_info)
+            
+            scratchpad_used = sum(layer_stack)
+            if scratchpad_used > scratchpad_size:
+                raise ValueError("Not enough scratpad space")
         
-        coe_datas = []
-        for b in range(num_banks):
-            bank_data = b''.join(info['datas_per_param_per_bank'][p][b] for p in range(info['num_params']))
-            bin_str_data = bin(int.from_bytes(b'\xff' + bank_data, byteorder='big'))
-            bin_str_data = bin_str_data[10:]
-            bin_str_data = [bin_str_data[i:i+8] for i in range(0, len(bin_str_data), 8)]
-            bin_str_data = ",\n".join(bin_str_data) + ";"
-            coe_datas.append(COE_INIT + bin_str_data)
-        
-        return coe_datas
+        exec_info = {}
+        exec_info['input_shape'] = self.input_shape
+        exec_info['scratchpad_size'] = scratchpad_size
+        exec_info['layers'] = exec_layer_infos
+
+        return exec_info        
     
     def generate_verilog(self):
-        pass
+        verilog = """
+        linear_layer_mac_loop(.clk_in(clock), m_size_in({0}))
+        """.format(784)
     
