@@ -321,6 +321,7 @@ class FPGAEmulator:
 
         # addrs
         input_addr = 0
+        input_prev_addr = 0
         weight_addr = 0
         bias_addr = 0
         output_addr = 0
@@ -340,6 +341,12 @@ class FPGAEmulator:
         i_mac = [0] * MAC_LANES
         b_mac = [0] * MAC_LANES
         o_mac = [0] * MAC_LANES
+        mac_done = 0
+        # relu signal
+        use_relu = 0
+        i_relu = [0] * MAC_LANES
+        o_relu = [0] * MAC_LANES
+        mac_output_prev_addrs = [0] * MAC_LANES
 
         # bram scratchpad
         bram0_read_addr = 0
@@ -356,6 +363,10 @@ class FPGAEmulator:
         bram1_write_val = 0
         bram1_write_prev_val = 0
         
+        # mac lane idx
+        mac_lane_idx = 0
+        output_flag = 0
+        
         # emulation variable
         loop = None
 
@@ -363,6 +374,9 @@ class FPGAEmulator:
         while True:
             if use_mac:
                 o_mac = mac(w_mac, i_mac, b_mac)
+                mac_done = 1
+            if use_relu:
+                o_relu = relu(i_relu)
             
             if bram0_read_enable:
                 bram0_read_out = self.bram.read_bank(0, bram0_read_addr)
@@ -372,6 +386,7 @@ class FPGAEmulator:
                 self.bram.write_bank(1, bram1_write_addr, bram1_write_val)
             
             if next_layer:
+                next_layer = 0
                 layer_exec_info = layers[layer_num]
 
                 layer_type = layer_exec_info['layer_type']
@@ -388,6 +403,10 @@ class FPGAEmulator:
                     m_size = layer_config['m_size']
                     chw_size = layer_config['chw_size']
                     linear_layer_step = 0 if layer_config['has_bias'] else 1
+
+                elif layer_type == LayerType.RELU:
+                    output_base_addr = layer_config['output_base_addr']
+                    n_size = layer_config['n_size'] 
 
                 elif layer_type == LayerType.MOVE:
                     input_base_addr = layer_config['input_base_addr']
@@ -436,10 +455,102 @@ class FPGAEmulator:
                     
                     if loop_started == 0:
                         loop_started = 1
+
+                    if loop_done_out == 1:
+                        loop_started = 0
+                        loop_done_out = 0
+                        linear_layer_step = 1 # is there a constant for this?
                 
-                if linear_layer_step == 1:
-                    pass
+                # TODO: use mac lanes to set w_mac, i_mac, b_mac
+                elif linear_layer_step == 1:
+                    if loop_started == 0:
+                        loop = linear_layer_mac_loop(
+                                m_size,
+                                chw_size,
+                                input_base_addr,
+                                weight_base_addr,
+                                output_base_addr)
+                        use_mac = 1
+                        mac_done = 0
+                        mac_lane_idx = 0
+                        
+                    loop_out = next(loop, None)
+                    if loop_out is not None:
+                        loop_ready_out = 1
+                        input_addr, weight_addr, output_addr = loop_out                
+                    else:
+                        loop_done_out = 1
+                    if loop_ready_out:
+                        bram0_read_addr = weight_addr
+                        # TODO: are we sure this is done in 1 clock cycle?? If not fix
+                        w_mac[mac_lane_idx] = bram0_read_out
+
+                        # TODO: Fix below
+                        if output_flag == 0:
+                            b_mac[mac_lane_idx] = bram1_read_out
+                            bram1_read_addr = input_addr
+                            output_flag = 1
+                        elif output_flag == 1:
+                            i_mac[mac_lane_idx] = bram1_read_out
+                            bram1_read_addr = output_addr
+                        if mac_done == 1:
+                            bram1_write_addr = mac_output_prev_addrs[mac_lane_idx]
+                            bram1_write_val = o_mac[mac_lane_idx] 
+                        if mac_lane_idx == MAC_LANES - 1:
+                            bram1_write_val = o_mac
+                            mac_lane_idx = 0
+                        elif output_flag == 1:
+                            mac_lane_idx = mac_lane_idx + 1
+                        mac_output_prev_addrs[mac_lane_idx] = output_addr
+
+                    if loop_started == 0:
+                        loop_started = 1
+
+                    if loop_done_out == 1:
+                        loop_started = 0
+                        loop_done_out = 0
+                        use_mac = 0
+                        next_layer = 1 # Set this to go to next layer
             
+            # TODO: Now sure this is correct in light of MAC_LANES issues
+            
+            # elif layer_type == LayerType.RELU:
+            #     if loop_started == 0:
+            #         loop = linear_activation_loop(
+            #                 n_size, output_base_addr)
+            #         use_mac = 0
+            #         use_relu = 1
+            #     loop_out = next(loop, None)
+            #     if loop_out is not None:
+            #         loop_ready_out = 1
+            #         input_addr, weight_addr, output_addr = loop_out                
+            #     else:
+            #         loop_done_out = 1
+            #     if loop_ready_out:
+            #         bram0_read_addr = weight_addr
+            #         # TODO: are we sure this is done in 1 clock cycle?? If not fix
+            #         i_mac[mac_lane_idx] = bram1_read_out
+            #         bram1_write_addr = output_prev_addr
+            #         bram1_read_addr = input_addr
+            #         if mac_done == 1:
+            #             bram1_write_addr = mac_output_prev_addrs[mac_lane_idx]
+            #             bram1_write_val = o_mac[mac_lane_idx] 
+            #         if mac_lane_idx == MAC_LANES - 1:
+            #             bram1_write_val = o_mac
+            #             mac_lane_idx = 0
+            #         else:
+            #             mac_lane_idx = mac_lane_idx + 1
+            #         mac_output_prev_addrs[mac_lane_idx] = output_addr
+
+            #     if loop_started == 0:
+            #         loop_started = 1
+
+            #     if loop_done_out == 1:
+            #         loop_started = 0
+            #         loop_done_out = 0
+            #         use_relu = 0
+            #         next_layer = 1 # Set this to go to next layer       
+        
             
             
             
