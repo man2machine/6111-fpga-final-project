@@ -175,13 +175,11 @@ def mac(w_in, i_in, b_in, lanes=MAC_LANES, cycle_delay=3):
         yield None
     yield o_out
 
-def relu(o_in, lanes=MAC_LANES, cycle_delay=1):
-    a_out = [0] * lanes
-    for i in range(lanes):
-        if o_in < 0:
-            a_out[i] = 0
-        else:
-            a_out[i] = o_in[i]
+def relu(o_in, cycle_delay=1):
+    if o_in < 0:
+        a_out = 0
+    else:
+        a_out = o_in
     for c in range(cycle_delay - 1):
         yield None
     yield a_out
@@ -234,20 +232,6 @@ def linear_layer_mac_loop(
         
         CHWm += CHW
 
-def linear_activation_loop(
-    M,
-    output_addr):
-    # Shapes:
-    # output: (M,)
-    
-    for m in range(M):
-        # output
-        addr_o = m + output_addr
-            
-        yield (addr_o,)
-
-        # o[m] = activation(o[m])
-
 def conv_loop():
     pass
 
@@ -273,6 +257,20 @@ def move_loop(
         yield (addr_i, addr_o,)
 
         # o[n] = i[n]
+
+def activation_loop(
+    N,
+    output_addr):
+    # Shapes:
+    # output: (N,)
+    
+    for n in range(N):
+        # output
+        addr_o = n + output_addr
+            
+        yield (addr_o,)
+
+        # o[n] = activation(o[n])
 
 # =============================================================================
 # Overall FSM
@@ -337,12 +335,13 @@ class FPGAEmulator:
         linear_init_loop_done_out = 0
         linear_init_loop_start_ready_in = 0
         linear_init_loop_next_ready_in = 0
+        linear_init_loop_first_val_read = 0
+        linear_init_loop_num_writes = 0
 
         # linear mac loop module signals
         linear_mac_loop_input_addr = 0
         linear_mac_loop_weight_addr = 0
         linear_mac_loop_output_addr = 0
-        linear_mac_loop_output_prev_addr = 0
         linear_mac_loop_started = 0
         linear_mac_loop_ready_out = 0
         linear_mac_loop_done_out = 0
@@ -354,15 +353,39 @@ class FPGAEmulator:
         linear_mac_loop_write_lane_index = 0
         linear_mac_loop_output_addrs = [0] * MAC_LANES
 
+        # activation loop module signals
+        activation_loop_output_addr = 0
+        activation_loop_output_prev_addr = 0
+        activation_loop_started = 0
+        activation_loop_ready_out = 0
+        activation_loop_done_out = 0
+        activation_loop_start_ready_in = 0
+        activation_loop_next_ready_in = 0
+        activation_loop_num_reads = 0
+        activation_loop_num_writes = 0
+        activation_loop_relu_started = 0
+
+        # move loop module signals
+        move_loop_bias_addr = 0
+        move_loop_output_addr = 0
+        move_loop_output_prev_addr = 0
+        move_loop_started = 0
+        move_loop_ready_out = 0
+        move_loop_done_out = 0
+        move_loop_start_ready_in = 0
+        move_loop_next_ready_in = 0
+        move_loop_first_val_read = 0
+        move_loop_num_writes = 0
+
         # layer signals
         next_layer = 0
 
         # loop modules
         linear_init_loop_inst = None
         linear_mac_loop_inst = None
+        relu_inst = None
         move_loop_inst = None
         mac_inst = None
-        relu_inst = None
 
         # mac module signals
         mac_ready_in = 0
@@ -375,9 +398,8 @@ class FPGAEmulator:
         # relu signal
         relu_ready_in = 0
         relu_done_out = 0
-        inputs_relu = [0] * MAC_LANES
-        outputs_relu = [0] * MAC_LANES
-        mac_output_prev_addrs = [0] * MAC_LANES
+        input_relu = 0
+        output_relu = 0
 
         # bram scratchpad
         bram0_read_addr = 0
@@ -415,10 +437,10 @@ class FPGAEmulator:
             
             # ReLU Module
             if relu_ready_in:
-                relu_inst = relu(inputs_relu)
+                relu_inst = relu(input_relu)
                 loop_out = next(relu_inst, None)
                 if loop_out is not None:
-                    outputs_relu = loop_out
+                    output_relu = loop_out
                     relu_done_out = 0
                 else:
                     relu_done_out = 1
@@ -456,6 +478,34 @@ class FPGAEmulator:
                 else:
                     linear_mac_loop_ready_out = 0
                     linear_mac_loop_done_out = 1
+            
+            # activation module
+            if activation_loop_start_ready_in:
+                activation_loop_inst = activation_loop(
+                    n_size)
+            if activation_loop_next_ready_in:
+                loop_out = next(activation_loop_inst, None)
+                if loop_out is not None:
+                    activation_loop_ready_out = 1
+                    activation_loop_done_out = 0
+                    activation_loop_output_addr, = loop_out                
+                else:
+                    activation_loop_ready_out = 0
+                    activation_loop_done_out = 1
+            
+            # activation module
+            if activation_loop_start_ready_in:
+                activation_loop_inst = activation_loop(
+                    n_size)
+            if activation_loop_next_ready_in:
+                loop_out = next(activation_loop_inst, None)
+                if loop_out is not None:
+                    activation_loop_ready_out = 1
+                    activation_loop_done_out = 0
+                    activation_loop_output_addr, = loop_out                
+                else:
+                    activation_loop_ready_out = 0
+                    activation_loop_done_out = 1
 
             # bram modules
             if bram0_read_enable:
@@ -519,16 +569,22 @@ class FPGAEmulator:
             # execution of the layers
             elif layer_type == LayerType.DENSE:
                 if linear_layer_step == LayerStep.INIT_BIAS:
+                    if linear_init_loop_next_ready_in:
+                        linear_init_loop_next_ready_in = 0
+                    
                     if linear_init_loop_ready_out:
                         bram0_read_addr = linear_init_loop_bias_addr
                         bram0_read_enable = 1
+                        linear_init_loop_next_ready_in = 1
                     
-                    if linear_init_loop_ready_out or linear_init_loop_done_out:
+                    if linear_init_loop_num_writes < m_size:
                         bram1_write_addr = linear_init_loop_output_prev_addr
-                        bram1_write_enable = linear_init_loop_started
+                        bram1_write_enable = linear_init_loop_first_val_read
                         bram1_write_val = bram0_read_out
-                        
                         linear_init_loop_output_prev_addr = linear_init_loop_output_addr
+                        linear_init_loop_first_val_read = 1
+
+                        linear_init_loop_num_writes = linear_init_loop_num_writes + 1
                     
                     if linear_init_loop_start_ready_in:
                         linear_init_loop_start_ready_in = 0
@@ -538,7 +594,7 @@ class FPGAEmulator:
                         linear_init_loop_next_ready_in = 1
                         linear_init_loop_started = 1
                     
-                    if linear_init_loop_done_out:
+                    if linear_init_loop_done_out and (linear_init_loop_num_writes == m_size):
                         linear_layer_step = LayerStep.MAC_OUTPUT
                         linear_init_loop_bias_addr = 0
                         linear_init_loop_output_addr = 0
@@ -548,12 +604,13 @@ class FPGAEmulator:
                         linear_init_loop_done_out = 0
                         linear_init_loop_start_ready_in = 0
                         linear_init_loop_next_ready_in = 0
+                        linear_init_loop_first_val_read = 0
+                        linear_init_loop_num_writes = 0
                 
-                # TODO: use mac lanes to set w_mac, i_mac, b_mac
                 elif linear_layer_step == LayerStep.MAC_OUTPUT:
                     if linear_mac_loop_start_ready_in:
                         linear_mac_loop_start_ready_in = 0
-
+                    
                     if not linear_mac_loop_started:
                         linear_mac_loop_start_ready_in = 1
                         linear_mac_loop_next_ready_in = 1
@@ -606,41 +663,96 @@ class FPGAEmulator:
                                 next_layer = 1 # Set this to go to next layer
             
             elif layer_type == LayerType.RELU:
-                if loop_started == 0:
-                    loop = linear_activation_loop(
-                            n_size, output_base_addr)
-                    use_mac = 0
-                    use_relu = 1
-                loop_out = next(loop, None)
-                if loop_out is not None:
-                    loop_ready_out = 1
-                    input_addr, weight_addr, output_addr = loop_out                
-                else:
-                    loop_done_out = 1
-                if loop_ready_out:
-                    bram0_read_addr = weight_addr
-                    # TODO: are we sure this is done in 1 clock cycle?? If not fix
-                    i_mac[mac_lane_idx] = bram1_read_out
-                    bram1_write_addr = output_prev_addr
-                    bram1_read_addr = input_addr
-                    if mac_done == 1:
-                        bram1_write_addr = mac_output_prev_addrs[mac_lane_idx]
-                        bram1_write_val = o_mac[mac_lane_idx] 
-                    if mac_lane_idx == MAC_LANES - 1:
-                        bram1_write_val = o_mac
-                        mac_lane_idx = 0
-                    else:
-                        mac_lane_idx = mac_lane_idx + 1
-                    mac_output_prev_addrs[mac_lane_idx] = output_addr
+                if activation_loop_next_ready_in:
+                    activation_loop_next_ready_in = 0
+                
+                if relu_ready_in:
+                    relu_ready_in = 0
 
-                if loop_started == 0:
-                    loop_started = 1
+                if (activation_loop_num_reads < n_size) and activation_loop_ready_out and \
+                    ((activation_loop_num_reads == activation_loop_num_writes) or \
+                        (activation_loop_num_reads == (activation_loop_num_writes + 1)) and relu_done_out):
+                    bram1_read_addr = activation_loop_output_addr
+                    bram1_read_enable = 1
+                    activation_loop_next_ready_in = 1
+                    activation_loop_output_prev_addr = activation_loop_output_addr
+                    activation_loop_num_reads = activation_loop_num_reads + 1
+                
+                if (activation_loop_num_writes < n_size) and (activation_loop_num_reads == (activation_loop_num_writes + 1)) and not activation_loop_relu_started:
+                    bram1_read_enable = 0
+                    input_relu = bram1_read_out
+                    relu_ready_in = 1
+                    activation_loop_relu_started = 1
+                
+                if (activation_loop_num_writes < n_size) and (activation_loop_num_reads == (activation_loop_num_writes + 1)) and relu_done_out:
+                    bram1_write_addr = activation_loop_output_prev_addr
+                    bram1_write_enable = 1
+                    bram1_write_val = output_relu
+                    activation_loop_relu_started = 0
+                    
+                    activation_loop_num_writes = activation_loop_num_writes + 1
+                
+                if activation_loop_start_ready_in:
+                    activation_loop_start_ready_in = 0
+                
+                if not activation_loop_started:
+                    activation_loop_start_ready_in = 1
+                    activation_loop_next_ready_in = 1
+                    activation_loop_started = 1
+                
+                if activation_loop_done_out and (activation_loop_num_writes == n_size):
+                    activation_loop_output_addr = 0
+                    activation_loop_output_prev_addr = 0
+                    activation_loop_started = 0
+                    activation_loop_ready_out = 0
+                    activation_loop_done_out = 0
+                    activation_loop_start_ready_in = 0
+                    activation_loop_next_ready_in = 0
+                    activation_loop_num_reads = 0
+                    activation_loop_num_writes = 0
+                    activation_loop_relu_started = 0
+            
+            elif layer_type == LayerType.MOVE:
+                if linear_init_loop_next_ready_in:
+                    linear_init_loop_next_ready_in = 0
+                
+                if linear_init_loop_ready_out:
+                    bram0_read_addr = linear_init_loop_bias_addr
+                    bram0_read_enable = 1
+                    linear_init_loop_next_ready_in = 1
+                
+                if linear_init_loop_num_writes < m_size:
+                    bram1_write_addr = linear_init_loop_output_prev_addr
+                    bram1_write_enable = linear_init_loop_first_val_read
+                    bram1_write_val = bram0_read_out
+                    linear_init_loop_output_prev_addr = linear_init_loop_output_addr
+                    linear_init_loop_first_val_read = 1
 
-                if loop_done_out == 1:
-                    loop_started = 0
-                    loop_done_out = 0
-                    use_relu = 0
-                    next_layer = 1 # Set this to go to next layer       
+                    linear_init_loop_num_writes = linear_init_loop_num_writes + 1
+                
+                if linear_init_loop_start_ready_in:
+                    linear_init_loop_start_ready_in = 0
+                
+                if not linear_init_loop_started:
+                    linear_init_loop_start_ready_in = 1
+                    linear_init_loop_next_ready_in = 1
+                    linear_init_loop_started = 1
+                
+                if linear_init_loop_done_out and (linear_init_loop_num_writes == m_size):
+                    linear_layer_step = LayerStep.MAC_OUTPUT
+                    linear_init_loop_bias_addr = 0
+                    linear_init_loop_output_addr = 0
+                    linear_init_loop_output_prev_addr = 0
+                    linear_init_loop_started = 0
+                    linear_init_loop_ready_out = 0
+                    linear_init_loop_done_out = 0
+                    linear_init_loop_start_ready_in = 0
+                    linear_init_loop_next_ready_in = 0
+                    linear_init_loop_first_val_read = 0
+                    linear_init_loop_num_writes = 0
+
+            elif layer_type == LayerType.OUTPUT:
+                pass
         
         # EMULATION OF SENDING OUTPUT DATA FROM NEURAL NETWORK ================
         # this is not meant to be translated to verilog
