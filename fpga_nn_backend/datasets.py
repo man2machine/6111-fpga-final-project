@@ -20,29 +20,34 @@ class ImageDatasetType(Enum):
     MNIST = "mnist"
     CIFAR10 = "cifar10"
     CIFAR100 = "cifar100"
+    CIFAR10_GRAY = "cifar10_gray"
 
 IMG_DATASET_TO_NUM_CLASSES = {
     ImageDatasetType.MNIST: 10,
     ImageDatasetType.CIFAR10: 10,
-    ImageDatasetType.CIFAR100: 100
+    ImageDatasetType.CIFAR100: 100,
+    ImageDatasetType.CIFAR10_GRAY: 10
 }
 
 IMG_DATASET_TO_IMG_SIZE = {
     ImageDatasetType.MNIST: 28,
     ImageDatasetType.CIFAR10: 32,
-    ImageDatasetType.CIFAR100: 32
+    ImageDatasetType.CIFAR100: 32,
+    ImageDatasetType.CIFAR10_GRAY: 32
 }
 
 IMG_DATASET_TO_IMG_SIZE_FLAT = {
     ImageDatasetType.MNIST: 28**2,
     ImageDatasetType.CIFAR10: 3*32**2,
-    ImageDatasetType.CIFAR100: 3*32**2
+    ImageDatasetType.CIFAR100: 3*32**2,
+    ImageDatasetType.CIFAR10_GRAY: 32**2
 }
 
 IMG_DATASET_TO_NUM_SAMPLES = {
     ImageDatasetType.MNIST: (60000, 10000),
     ImageDatasetType.CIFAR10: (50000, 10000),
-    ImageDatasetType.CIFAR100: (50000, 10000)
+    ImageDatasetType.CIFAR100: (50000, 10000),
+    ImageDatasetType.CIFAR10_GRAY: (50000, 10000)
 }
 
 class RawDataset(Dataset):
@@ -145,6 +150,23 @@ def apply_img_transforms(datasets,
         
         test_transform = transforms.Compose([
             transforms.ToTensor()])
+    
+    elif dataset_type == ImageDatasetType.CIFAR10_GRAY:
+        train_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(0.4, 0.4, 0.4, 0.125),
+            transforms.RandomApply([
+                transforms.RandomAffine(degrees=10,
+                                        translate=(0.1, 0.1),
+                                        scale=(0.9, 1.1),
+                                        shear=10)], p=0.9),
+            transforms.Grayscale(),
+            transforms.ToTensor()])
+        
+        test_transform = transforms.Compose([
+            transforms.Grayscale(),
+            transforms.ToTensor()])
+    
     else:
         raise ValueError()
     
@@ -206,6 +228,15 @@ def get_img_dataset(data_dir,
             train=True,
             download=True)
         test_dataset = torchvision.datasets.CIFAR100(
+            data_dir,
+            train=False,
+            download=True)
+    elif dataset_type == ImageDatasetType.CIFAR10_GRAY:
+        train_dataset = torchvision.datasets.CIFAR10(
+            data_dir,
+            train=True,
+            download=True)
+        test_dataset = torchvision.datasets.CIFAR10(
             data_dir,
             train=False,
             download=True)

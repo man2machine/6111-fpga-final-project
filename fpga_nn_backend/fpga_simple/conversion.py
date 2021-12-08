@@ -5,6 +5,7 @@ Created on Sat Nov 20 17:35:25 2021
 @author: Shahir
 """
 
+import struct
 import math
 import copy
 from enum import Enum
@@ -322,10 +323,16 @@ class ConvertedNN:
     
     def generate_parameter_coe(self):
         param_datas = self.generate_parameter_data()
-        total_weight_data = b'\xff' + b''.join(param_datas)
+        param_datas = b''.join(param_datas)
+        byte_datas = bytearray()
+        num_bytes_per_line = 4
+        for b in param_datas:
+            byte_datas += struct.pack('>i', b)
+        total_weight_data = b'\xff' + bytes(byte_datas)
         bin_str_data = bin(int.from_bytes(total_weight_data, byteorder='big'))
         bin_str_data = bin_str_data[10:]
-        bin_str_data = [bin_str_data[i:i+8] for i in range(0, len(bin_str_data), 8)]
+        num_bits_per_line = num_bytes_per_line * 8
+        bin_str_data = [bin_str_data[i:i+num_bits_per_line] for i in range(0, len(bin_str_data), num_bits_per_line)]
         bin_str_data = ",\n".join(bin_str_data) + ";"
         
         return COE_INIT + bin_str_data
@@ -344,6 +351,8 @@ class ConvertedNN:
         layer_stack = [
             np.prod(self.input_shape),
         ]
+
+        max_addr_used = 0
 
         # start from last layer, go backwards
         for i in range(0, num_layers):
@@ -400,6 +409,8 @@ class ConvertedNN:
                 layer_exec_info['config'] = linear_config
                 exec_layer_infos.append(layer_exec_info)
 
+                max_addr_used = max(max_addr_used, linear_config['output_base_addr'] + linear_config['m_size'])
+
                 final_output_index = layer_info['stack_output_index']
                 if final_output_index < (len(layer_stack) - 1):
                     input_addr = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
@@ -420,6 +431,8 @@ class ConvertedNN:
 
                     layer_exec_info['config'] = move_config
                     exec_layer_infos.append(layer_exec_info)
+
+                    max_addr_used = max(max_addr_used, move_config['output_base_addr'] + move_config['n_size'])
             
             elif layer_type == ConverterLayerType.RELU:
                 layer_exec_info = {
@@ -445,6 +458,8 @@ class ConvertedNN:
                 layer_exec_info['config'] = relu_config
                 exec_layer_infos.append(layer_exec_info)
 
+                max_addr_used = max(max_addr_used, relu_config['output_base_addr'] + relu_config['n_size'])
+
             elif layer_type == ConverterLayerType.OUTPUT:
                 layer_exec_info = {
                     'layer_type': LayerType.OUTPUT,
@@ -456,11 +471,13 @@ class ConvertedNN:
                 }
 
                 output_config['output_base_addr'] = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
-                output_config['n_size'] = np.prod(layer_info['output_shape'])
+                output_config['n_size'] = np.prod(layer_info['output_shape'])                
 
                 layer_exec_info['config'] = output_config
                 exec_layer_infos.append(layer_exec_info)
                 last_layer = True
+
+                max_addr_used = max(max_addr_used, output_config['output_base_addr'] + output_config['n_size'])      
             
             scratchpad_used = sum(layer_stack)
             if scratchpad_used > scratchpad_size:
@@ -469,6 +486,20 @@ class ConvertedNN:
             if last_layer:
                 break
         
+        layer_exec_info = {
+            'layer_type': LayerType.INPUT_RESET,
+            'config': None
+        }
+        reset_config = {
+            'output_base_addr': None,
+            'n_size': None
+        }
+        input_size = np.prod(self.input_shape)
+        reset_config['output_base_addr'] = input_size
+        reset_config['n_size'] = max_addr_used + 1 - input_size
+        layer_exec_info['config'] = reset_config
+        exec_layer_infos.insert(0, layer_exec_info)
+
         exec_info = {}
         exec_info['input_shape'] = self.input_shape
         exec_info['inital_input_addr'] = 0

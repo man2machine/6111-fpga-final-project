@@ -49,6 +49,7 @@ class LayerType(Enum):
     # SUM = 4
     MOVE = 5
     OUTPUT = 6
+    INPUT_RESET = 7
 
 class LayerStep(Enum):
     INIT_BIAS = 0
@@ -332,6 +333,20 @@ def activation_loop(
 
         # o[n] = activation(o[n])
 
+def reset_loop(
+    N,
+    output_addr):
+    # Shapes:
+    # output: (N,)
+    
+    for n in range(N):
+        # output
+        addr_o = n + output_addr
+            
+        yield (addr_o,)
+
+        # o[n] = 0
+
 # =============================================================================
 # Overall FSM
 # =============================================================================
@@ -359,7 +374,7 @@ class FPGAEmulator:
     def execute(self, input_data):
         # EMULATION OF RETRIEVING INPUT DATA FROM EXTERNAL SOURCE =============
         # this is not meant to be translated to verilog
-        input_data = input_data.reshape(self.exec_info['input_shape']).astype(np.int8)
+        input_data = input_data.reshape(self.exec_info['input_shape']).astype(np.int32)
         iterator = serial_iterators[input_data.ndim](input_data.shape)
         i = 0
         for ind in iterator:
@@ -440,6 +455,15 @@ class FPGAEmulator:
         move_loop_next_ready_in = 0 # 1 bit
         move_loop_first_val_read = 0 # 1 bit
         move_loop_num_writes = 0 # SIZE_BITS
+
+        # reset loop module signals
+        reset_loop_output_addr = 0 # ADDR_BITS
+        reset_loop_started = 0 # 1 bit
+        reset_loop_ready_out = 0 # 1 bit
+        reset_loop_done_out = 0 # 1 bit
+        reset_loop_start_ready_in = 0 # 1 bit
+        reset_loop_next_ready_in = 0 # 1 bit
+        reset_loop_num_writes = 0 # SIZE_BITS
 
         # layer signals
         next_layer = 0 # 1 bit
@@ -565,7 +589,7 @@ class FPGAEmulator:
                     activation_loop_ready_out = 0
                     activation_loop_done_out = 1
             
-            # activation module
+            # move module
             if move_loop_start_ready_in:
                 move_loop_inst = move_loop(
                     n_size,
@@ -581,6 +605,22 @@ class FPGAEmulator:
                 else:
                     move_loop_ready_out = 0
                     move_loop_done_out = 1
+
+            # reset module
+            if reset_loop_start_ready_in:
+                reset_loop_inst = reset_loop(
+                    n_size,
+                    output_base_addr)
+                reset_loop_done_out = 0
+            if reset_loop_next_ready_in:
+                loop_out = next(reset_loop_inst, None)
+                if loop_out is not None:
+                    reset_loop_ready_out = 1
+                    reset_loop_done_out = 0
+                    reset_loop_output_addr, = loop_out                
+                else:
+                    reset_loop_ready_out = 0
+                    reset_loop_done_out = 1
 
             # BRAM modules
             if bram0_read_enable:
@@ -601,7 +641,7 @@ class FPGAEmulator:
                 layer_exec_info = layers[layer_num]
                 layer_type = layer_exec_info['layer_type']
                 layer_config = layer_exec_info['config']
-                print(layer_config)
+                print(layer_exec_info)
 
                 if layer_type == LayerType.DENSE:
                     input_base_addr = layer_config['input_base_addr']
@@ -622,6 +662,10 @@ class FPGAEmulator:
                     n_size = layer_config['n_size']
 
                 elif layer_type == LayerType.OUTPUT:
+                    output_base_addr = layer_config['output_base_addr']
+                    n_size = layer_config['n_size']
+                
+                elif layer_type == LayerType.INPUT_RESET:
                     output_base_addr = layer_config['output_base_addr']
                     n_size = layer_config['n_size']
                 
@@ -835,7 +879,7 @@ class FPGAEmulator:
             # move data layer
             elif layer_type == LayerType.MOVE:
                 # done writing moves, reset
-                if move_loop_done_out and (move_loop_num_writes == m_size):
+                if move_loop_done_out and (move_loop_num_writes == n_size):
                     move_loop_output_addr = 0
                     move_loop_output_prev_addr = 0
                     move_loop_started = 0
@@ -856,7 +900,7 @@ class FPGAEmulator:
                     move_loop_next_ready_in = 0
                 
                 # write moved value to output
-                if (move_loop_num_writes < m_size) and move_loop_first_val_read:
+                if (move_loop_num_writes < n_size) and move_loop_first_val_read:
                     bram1_write_addr = move_loop_output_prev_addr
                     bram1_write_enable = 1
                     bram1_write_val = bram1_read_out
@@ -876,6 +920,41 @@ class FPGAEmulator:
                     move_loop_next_ready_in = 1
                     move_loop_started = 1
             
+            # first reset layer
+            elif layer_type == LayerType.INPUT_RESET:
+                # done writing resets, reset
+                if reset_loop_done_out and (reset_loop_num_writes == n_size):
+                    reset_loop_output_addr = 0
+                    reset_loop_started = 0
+                    reset_loop_ready_out = 0
+                    reset_loop_done_out = 0
+                    reset_loop_start_ready_in = 0
+                    reset_loop_next_ready_in = 0
+                    reset_loop_num_writes = 0
+                    next_layer = 1 # go to next layer
+                
+                # de-assert ready in signal
+                if reset_loop_start_ready_in:
+                    reset_loop_start_ready_in = 0
+                
+                # de-assert ready in signal
+                if reset_loop_next_ready_in:
+                    reset_loop_next_ready_in = 0
+
+                # write reset value to output
+                if reset_loop_ready_out:
+                    bram1_write_addr = reset_loop_output_addr
+                    bram1_write_enable = 1
+                    bram1_write_val = 0
+                    reset_loop_next_ready_in = 1
+                    reset_loop_num_writes = reset_loop_num_writes + 1
+                
+                # entering this state for the first time
+                if not reset_loop_started:
+                    reset_loop_start_ready_in = 1
+                    reset_loop_next_ready_in = 1
+                    reset_loop_started = 1
+
             # final output layer
             elif layer_type == LayerType.OUTPUT:
                 # do nothing, this layer involves no computation
