@@ -124,10 +124,10 @@ def apply_img_transforms(datasets,
                                         shear=10)], p=0.9),
             transforms.ToTensor(),
             AddGaussianNoise(0, 0.1),
-            Clamp(0, 1),
-            torchvision.transforms.Lambda(
-                lambda x: torchvision.transforms.functional.invert(x))
-            ])
+            Clamp(0, 1)])
+        
+            # torchvision.transforms.Lambda(
+            #     lambda x: torchvision.transforms.functional.invert(x))
     
         test_transform = transforms.Compose([
             transforms.ToTensor()])
