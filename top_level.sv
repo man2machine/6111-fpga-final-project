@@ -46,7 +46,7 @@ module top_level(
 	parameter MAC_LANES = 1;
 	
     // Overall layer state variables
-    logic [4:0] layer_num;
+    logic [7:0] layer_num;
     logic [2:0] layer_type;
     
     // addr bases
@@ -63,6 +63,7 @@ module top_level(
     // linear layer overall state variables
     logic linear_layer_step;
 
+	//AAAAAA -- some of these should be initialised to 0 to start make sure that is done 
     // linear init loop module signals
     logic [ADDR_BITS-1:0] linear_init_loop_bias_addr;
     logic [ADDR_BITS-1:0] linear_init_loop_output_addr;
@@ -88,7 +89,7 @@ module top_level(
 	logic [LANE_BITS-1:0] linear_mac_loop_read_lane_index;
 	logic linear_mac_loop_write_step;
 	logic [LANE_BITS-1:0] linear_mac_loop_write_lane_index;
-	logic [ADDR_BITS-1:0] linear_mac_loop_output_addrs [MAC_LANES-1:0]; 
+	logic [ADDR_BITS-1:0] linear_mac_loop_output_addrs [MAC_LANES-1:0];  //thing to recheck that the 2D array is done correctly 
 
     // activation loop module signals
     logic [ADDR_BITS-1:0] activation_loop_output_addr;
@@ -103,7 +104,7 @@ module top_level(
 	logic activation_loop_relu_started;
 
 	// move loop module signals
-	logic [ADDR_BITS-1:0] move_loop_bias_addr;
+	// logic [ADDR_BITS-1:0] move_loop_bias_addr;//not needed anymore?
     logic [ADDR_BITS-1:0] move_loop_output_addr;
     logic [ADDR_BITS-1:0] move_loop_output_prev_addr;
     logic move_loop_started;
@@ -124,10 +125,17 @@ module top_level(
 	// move_loop_inst = None
 	// mac_inst = None
 
+	//modules: initialised as None in python what here?
+	logic linear_init_loop_inst;
+	logic linear_mac_loop_inst;
+    logic relu_inst;
+    logic move_loop_inst;
+    logic mac_inst;
+
 	// mac module signals
 	logic mac_ready_in;
 	logic mac_done_out;
-	logic signed [DATA_BITS-1:0] weights_mac [MAC_LANES-1:0]; 
+	logic signed [DATA_BITS-1:0] weights_mac [MAC_LANES-1:0]; //recheck initialisation of all these 
 	logic signed [DATA_BITS-1:0] inputs_mac [MAC_LANES-1:0];  
 	logic signed [DATA_BITS-1:0] biases_mac [MAC_LANES-1:0];  
 	logic signed [DATA_BITS-1:0] outputs_mac [MAC_LANES-1:0];
@@ -138,13 +146,15 @@ module top_level(
 	logic signed [DATA_BITS-1:0] input_relu;
 	logic signed [DATA_BITS-1:0] output_relu;
 
+
+	//make sure we are not confused with the bram naming especiallly as the camera ones are named similarly 
 	// bram scratchpad
 	logic [ADDR_BITS-1:0] bram0_read_addr;
 	logic bram0_read_enable;
 	logic signed [DATA_BITS-1:0] bram0_read_out;
 
 	// bram scratchpad
-	logic bram1_read_enable;
+	logic bram1_read_enable; //this is not needed in verilog
 	logic [ADDR_BITS-1:0] bram1_read_addr;
 	logic signed [DATA_BITS-1:0] bram1_read_out;
 	logic bram1_write_enable;
@@ -154,6 +164,15 @@ module top_level(
 	always_ff @(posedge clk_in) begin
 		if (rst_in) begin
 			// TODO: initialize all variables
+			relu_ready_in <= 0;
+			relu_done_out <= 0; 
+			input_relu <= 0;
+			output_relu <= 0;
+			bram0_read_addr <= 0;
+			bram0_write_enable <= 0;
+			bram1_read_addr <= 0;
+			bram1_write_addr <= 0;
+			bram1_write_enable <= 0;
 		end
 		else begin
 			if (next_layer) begin
