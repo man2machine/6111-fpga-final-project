@@ -90,7 +90,7 @@ class BRAMEmulator:
         return bank_index
     
     def read_bank(self, bank, addr):
-        assert 0 <= bank < self.len(self.banks)
+        assert 0 <= bank < len(self.banks)
         bounds = self.banks[bank]
         assert 0 <= addr <= (bounds[1] - bounds[0])
         addr = bounds[0] + addr
@@ -98,7 +98,7 @@ class BRAMEmulator:
         return self.read(addr)
     
     def write_bank(self, bank, addr, val):
-        assert 0 <= bank < self.len(self.banks)
+        assert 0 <= bank < len(self.banks)
         bounds = self.banks[bank]
         assert 0 <= addr <= (bounds[1] - bounds[0])
         addr = bounds[0] + addr
@@ -277,11 +277,11 @@ def activation_loop(
 # =============================================================================
 
 class FPGAEmulator:
-    def __init__(self, converted_nn):
+    def __init__(self, converted_nn, bram_reserved_size):
         self.converted_nn = converted_nn
         self.bram = BRAMEmulator(BRAM_SIZE)
         weight_data = np.array(list(b''.join(self.converted_nn.generate_parameter_data())), dtype=np.int8)
-        scratchpad_size = BRAM_SIZE - len(weight_data) - 1024
+        scratchpad_size = BRAM_SIZE - len(weight_data) - bram_reserved_size
         
         self.preparation_info = {
             'bram_parameters_size': len(weight_data),
@@ -313,8 +313,8 @@ class FPGAEmulator:
         # DATA_BITS = 8 signed
 
         # overall layer state variables
-        layer_num = 0
-        layer_type = 0
+        layer_num = 0 # 8 bits
+        layer_type = 0 # 3 bits
 
         # addr bases
         input_base_addr = 0 # ADDR_BITS
@@ -352,7 +352,7 @@ class FPGAEmulator:
         linear_mac_loop_start_ready_in = 0 # 1 bit
         linear_mac_loop_next_ready_in = 0 # 1 bit
         linear_mac_loop_read_step = 0 # 2 bits
-        linear_mac_loop_read_lane_index = 0  # 1 bit
+        linear_mac_loop_read_lane_index = 0 # LANE_BITS
         linear_mac_loop_write_step = 0 # 1 bit
         linear_mac_loop_write_lane_index = 0 # LANE_BITS
         linear_mac_loop_output_addrs = [0] * MAC_LANES # MAC_LANES by ADDR_BITS
@@ -383,7 +383,7 @@ class FPGAEmulator:
         # layer signals
         next_layer = 0 # 1 bit
 
-        # loop modules
+        # modules
         linear_init_loop_inst = None
         linear_mac_loop_inst = None
         relu_inst = None
@@ -398,7 +398,7 @@ class FPGAEmulator:
         biases_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
         outputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
         
-        # relu signal
+        # relu module signals
         relu_ready_in = 0 # 1 bit
         relu_done_out = 0 # 1 bit
         input_relu = 0 # DATA_BITS
@@ -787,6 +787,6 @@ class FPGAEmulator:
         for n in range(n_size):
             self.bram.read_bank(0, output_base_addr + n)
         # =====================================================================
+        output_data = np.array(output_data, np.int8)
 
         return output_data
-

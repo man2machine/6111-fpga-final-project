@@ -297,7 +297,7 @@ class ConvertedNN:
     
     def finalize(self):
         self._frozen = True
-        assert self.layers_info['layers'][0]['layer_type'] == LayerType.OUTPUT
+        assert self.layers_info['layers'][-1]['layer_type'] == ConverterLayerType.OUTPUT
     
     def get_layer_info(self):
         # information needed to write verilog for all the layers
