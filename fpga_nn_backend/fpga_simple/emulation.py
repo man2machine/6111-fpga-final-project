@@ -237,7 +237,7 @@ def linear_layer_mac_loop(
         
         CHWm += CHW
 
-def linear_loop(
+def linear_layer_mac_loop(
     M,
     CHW,
     M1,
@@ -253,8 +253,8 @@ def linear_loop(
     # output: (M,)
     
     # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_i = [0]*mac_lanes
     addrs_w = [0]*mac_lanes
-    addrs_b = [0]*mac_lanes
     addrs_o = [0]*mac_lanes
 
     assert mac_lanes < M
@@ -269,17 +269,19 @@ def linear_loop(
             # m1L = m1 * mac_lanes
             # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
             for m0 in range(mac_lanes):
+                # input
+                addrs_i[m0] = chw + input_addr
+
                 # output
                 addrs_o[m0] = m1L + m0 + output_addr
-
-                # bias
-                addrs_b[m0] = m1L + m0 + bias_addr
 
                 # weight
                 addrs_w[m0] = CHW_m1L_m0 + chw + weight_addr
                 CHW_m1L_m0 += CHW
+
+                # o[m] = o[m] + i[chw] * w[CHW*m + chw];
             
-                yield (addrs_w[m0], addrs_b[m0], addrs_o[m0])
+                yield (addrs_i[m0], addrs_w[m0], addrs_o[m0])
             
             # parallel loop for MAC - end
         m1L += mac_lanes
@@ -363,7 +365,8 @@ class FPGAEmulator:
         # ADDR_BITS = 32
         # SIZE_BITS = 10
         # LANE_BITS = 3
-        # DATA_BITS = 8 signed
+        # DATA_BITS1 = 8 signed
+        # DATA_BITS2 = 32 signed
 
         # overall layer state variables
         layer_num = 0 # 8 bits
@@ -447,26 +450,26 @@ class FPGAEmulator:
         # mac module signals
         mac_ready_in = 0 # 1 bit
         mac_done_out = 0 # 1 bit
-        weights_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
-        inputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
-        biases_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
-        outputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
+        weights_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
+        inputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
+        biases_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
+        outputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
         
         # relu module signals
         relu_ready_in = 0 # 1 bit
         relu_done_out = 0 # 1 bit
-        input_relu = 0 # DATA_BITS
-        output_relu = 0 # DATA_BITS
+        input_relu = 0 # DATA_BITS1
+        output_relu = 0 # DATA_BITS1
 
         # BRAM parameters
         bram0_read_addr = 0 # ADDR_BITS
         bram0_read_enable = 0 # 1 bit
-        bram0_read_out = 0 # DATA_BITS
+        bram0_read_out = 0 # DATA_BITS1
 
         # BRAM scratchpad
         bram1_read_enable = 0 # 1 bit
         bram1_read_addr = 0 # ADDR_BITS
-        bram1_read_out = 0 # DATA_BITS
+        bram1_read_out = 0 # DATA_BITS1
         bram1_write_enable = 0 # 1 bit
         bram1_write_addr = 0 # ADDR_BITS
         bram1_write_val = 0 # 1 bit
