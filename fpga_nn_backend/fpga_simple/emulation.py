@@ -33,9 +33,10 @@ function is preferred and classes used only when needed
 # Global params
 BRAM_SIZE = 607500 # size in bytes
 DATA_BOUNDS = (-128, 127) # 8 bit signed
+DATA_BOUNDS = (-2147483648, 2147483647) # 32 bit signed
 
 # mac params
-MAC_LANES = 1
+MAC_LANES = 10
 
 # implementation params
 BRAM_STACK_SIZE = 64
@@ -167,13 +168,13 @@ serial_iterators = {
 # =============================================================================
 
 def mac(w_in, i_in, b_in, lanes=MAC_LANES, cycle_delay=3):
-    w_in = w_in[:]
-    i_in = i_in[:]
-    b_in = b_in[:]
+    w_in = np.int32(w_in[:])
+    i_in = np.int32(i_in[:])
+    b_in = np.int32(b_in[:])
     yield None # first cycle copy variables
     o_out = [0] * lanes
     for i in range(lanes):
-        o_out[i] = np.int8(w_in[i] * i_in[i] + b_in[i])
+        o_out[i] = np.int32(w_in[i] * i_in[i] + b_in[i])
     for c in range(cycle_delay - 2):
         yield None
     while True:
@@ -240,10 +241,8 @@ def linear_layer_mac_loop(
 def linear_layer_mac_loop(
     M,
     CHW,
-    M1,
     input_addr,
     weight_addr,
-    bias_addr,
     output_addr,
     mac_lanes=MAC_LANES):
     # Shapes:
@@ -257,11 +256,12 @@ def linear_layer_mac_loop(
     addrs_w = [0]*mac_lanes
     addrs_o = [0]*mac_lanes
 
-    assert mac_lanes < M
-    assert M1 == math.ceil(M / mac_lanes)
+    assert mac_lanes <= M
+    M1 = math.ceil(M / mac_lanes)
     CHW_M0 = CHW * MAC_LANES
     m1L = 0
     CHW_m1L_m0 = 0
+    CHW_m1L_m0_temp = 0
     for m1 in range(M1):
         for chw in range(CHW):
             # parallel loop for MAC - start
@@ -274,18 +274,23 @@ def linear_layer_mac_loop(
 
                 # output
                 addrs_o[m0] = m1L + m0 + output_addr
+                # addrs_o[m0] = m1*MAC_LANES + m0 + output_addr
 
                 # weight
-                addrs_w[m0] = CHW_m1L_m0 + chw + weight_addr
-                CHW_m1L_m0 += CHW
+                addrs_w[m0] = CHW_m1L_m0_temp + chw + weight_addr
+                CHW_m1L_m0_temp += CHW
+                # addrs_w[m0] = CHW*(m1*MAC_LANES+m0) + chw + weight_addr
 
                 # o[m] = o[m] + i[chw] * w[CHW*m + chw];
             
                 yield (addrs_i[m0], addrs_w[m0], addrs_o[m0])
             
+            CHW_m1L_m0_temp = CHW_m1L_m0
+            
             # parallel loop for MAC - end
+        CHW_m1L_m0 += CHW_M0
+        CHW_m1L_m0_temp = CHW_m1L_m0 + CHW_M0
         m1L += mac_lanes
-        CHW_m1L_m0 += mac_lanes*CHW
 
 def conv_loop():
     pass
@@ -365,8 +370,7 @@ class FPGAEmulator:
         # ADDR_BITS = 32
         # SIZE_BITS = 10
         # LANE_BITS = 3
-        # DATA_BITS1 = 8 signed
-        # DATA_BITS2 = 32 signed
+        # DATA_BITS = 32 signed
 
         # overall layer state variables
         layer_num = 0 # 8 bits
@@ -450,26 +454,26 @@ class FPGAEmulator:
         # mac module signals
         mac_ready_in = 0 # 1 bit
         mac_done_out = 0 # 1 bit
-        weights_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
-        inputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
-        biases_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
-        outputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS1
+        weights_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
+        inputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
+        biases_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
+        outputs_mac = [0] * MAC_LANES # MAC_LANES by DATA_BITS
         
         # relu module signals
         relu_ready_in = 0 # 1 bit
         relu_done_out = 0 # 1 bit
-        input_relu = 0 # DATA_BITS1
-        output_relu = 0 # DATA_BITS1
+        input_relu = 0 # DATA_BITS
+        output_relu = 0 # DATA_BITS
 
         # BRAM parameters
         bram0_read_addr = 0 # ADDR_BITS
         bram0_read_enable = 0 # 1 bit
-        bram0_read_out = 0 # DATA_BITS1
+        bram0_read_out = 0 # DATA_BITS
 
         # BRAM scratchpad
         bram1_read_enable = 0 # 1 bit
         bram1_read_addr = 0 # ADDR_BITS
-        bram1_read_out = 0 # DATA_BITS1
+        bram1_read_out = 0 # DATA_BITS
         bram1_write_enable = 0 # 1 bit
         bram1_write_addr = 0 # ADDR_BITS
         bram1_write_val = 0 # 1 bit
@@ -943,6 +947,8 @@ class FPGAEmulator:
             #     print("####")
 
             cycles += 1
+        
+        print("Cycles:", cycles)
 
         # EMULATION OF SENDING OUTPUT DATA FROM NEURAL NETWORK ================
         # this is not meant to be translated to verilog
@@ -950,6 +956,5 @@ class FPGAEmulator:
         for n in range(n_size):
             output_data[n] = self.bram.read_bank(1, output_base_addr + n)
         # =====================================================================
-        output_data = np.array(output_data, np.int8)
 
         return output_data
