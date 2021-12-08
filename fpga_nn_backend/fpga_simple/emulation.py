@@ -167,13 +167,17 @@ serial_iterators = {
 # =============================================================================
 
 def mac(w_in, i_in, b_in, lanes=MAC_LANES, cycle_delay=3):
+    w_in = w_in[:]
+    i_in = i_in[:]
+    b_in = b_in[:]
+    yield None # first cycle copy variables
     o_out = [0] * lanes
     for i in range(lanes):
-        o_out[i] = w_in[i] * i_in[i] + b_in[i]
-    
-    for c in range(cycle_delay - 1):
+        o_out[i] = np.int8(w_in[i] * i_in[i] + b_in[i])
+    for c in range(cycle_delay - 2):
         yield None
-    yield o_out
+    while True:
+        yield o_out[:]
 
 def relu(o_in, cycle_delay=1):
     if o_in < 0:
@@ -182,7 +186,8 @@ def relu(o_in, cycle_delay=1):
         a_out = o_in
     for c in range(cycle_delay - 1):
         yield None
-    yield a_out
+    while True:
+        yield a_out
 
 # =============================================================================
 # Serializers & Deserializer Loops
@@ -231,6 +236,54 @@ def linear_layer_mac_loop(
             # o[m] = o[m] + i[chw] * w[CHW*m + chw];
         
         CHWm += CHW
+
+def linear_loop(
+    M,
+    CHW,
+    M1,
+    input_addr,
+    weight_addr,
+    bias_addr,
+    output_addr,
+    mac_lanes=MAC_LANES):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+    
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_w = [0]*mac_lanes
+    addrs_b = [0]*mac_lanes
+    addrs_o = [0]*mac_lanes
+
+    assert mac_lanes < M
+    assert M1 == math.ceil(M / mac_lanes)
+    CHW_M0 = CHW * MAC_LANES
+    m1L = 0
+    CHW_m1L_m0 = 0
+    for m1 in range(M1):
+        for chw in range(CHW):
+            # parallel loop for MAC - start
+
+            # m1L = m1 * mac_lanes
+            # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
+            for m0 in range(mac_lanes):
+                # output
+                addrs_o[m0] = m1L + m0 + output_addr
+
+                # bias
+                addrs_b[m0] = m1L + m0 + bias_addr
+
+                # weight
+                addrs_w[m0] = CHW_m1L_m0 + chw + weight_addr
+                CHW_m1L_m0 += CHW
+            
+                yield (addrs_w[m0], addrs_b[m0], addrs_o[m0])
+            
+            # parallel loop for MAC - end
+        m1L += mac_lanes
+        CHW_m1L_m0 += mac_lanes*CHW
 
 def conv_loop():
     pass
@@ -303,7 +356,7 @@ class FPGAEmulator:
         iterator = serial_iterators[input_data.ndim](input_data.shape)
         i = 0
         for ind in iterator:
-            self.bram.write_bank(1, i + self.exec_info['inital_input_addr'], input_data[i])
+            self.bram.write_bank(1, i + self.exec_info['inital_input_addr'], input_data[ind])
             i += 1  
         # =====================================================================
 
@@ -419,7 +472,11 @@ class FPGAEmulator:
 
         # configuration load
         layers = self.exec_info['layers']
+        
+        # initial reset code
+        next_layer = 1
 
+        cycles = 0
         # fsm loop
         while True:
             # modules emulation
@@ -427,22 +484,26 @@ class FPGAEmulator:
             # MAC Module
             if mac_ready_in:
                 mac_inst = mac(weights_mac, inputs_mac, biases_mac)
+                mac_done_out = 0
+            if mac_inst:
                 loop_out = next(mac_inst, None)
                 if loop_out is not None:
                     outputs_mac = loop_out
-                    mac_done_out = 0
-                else:
                     mac_done_out = 1
+                else:
+                    mac_done_out = 0
             
             # ReLU Module
             if relu_ready_in:
                 relu_inst = relu(input_relu)
+                relu_done_out = 0
+            if relu_inst:
                 loop_out = next(relu_inst, None)
                 if loop_out is not None:
                     output_relu = loop_out
-                    relu_done_out = 0
-                else:
                     relu_done_out = 1
+                else:
+                    relu_done_out = 0
 
             # linear loop initial module
             if linear_init_loop_start_ready_in:
@@ -450,6 +511,7 @@ class FPGAEmulator:
                     m_size,
                     bias_base_addr,
                     output_base_addr)
+                linear_init_loop_done_out = 0
             if linear_init_loop_next_ready_in:
                 loop_out = next(linear_init_loop_inst, None)
                 if loop_out is not None:
@@ -468,6 +530,7 @@ class FPGAEmulator:
                     input_base_addr,
                     weight_base_addr,
                     output_base_addr)
+                linear_mac_loop_done_out = 0
             if linear_mac_loop_next_ready_in:
                 loop_out = next(linear_mac_loop_inst, None)
                 if loop_out is not None:
@@ -482,6 +545,7 @@ class FPGAEmulator:
             if activation_loop_start_ready_in:
                 activation_loop_inst = activation_loop(
                     n_size)
+                activation_loop_done_out = 0
             if activation_loop_next_ready_in:
                 loop_out = next(activation_loop_inst, None)
                 if loop_out is not None:
@@ -496,6 +560,7 @@ class FPGAEmulator:
             if move_loop_start_ready_in:
                 move_loop_inst = move_loop(
                     n_size)
+                move_loop_done_out = 0
             if move_loop_next_ready_in:
                 loop_out = next(move_loop_inst, None)
                 if loop_out is not None:
@@ -513,7 +578,7 @@ class FPGAEmulator:
                 bram1_read_out = self.bram.read_bank(1, bram1_read_addr)
             if bram1_write_enable:
                 self.bram.write_bank(1, bram1_write_addr, bram1_write_val)
-            
+
             # actual fsm
             if next_layer:
                 next_layer = 0
@@ -525,6 +590,7 @@ class FPGAEmulator:
                 layer_exec_info = layers[layer_num]
                 layer_type = layer_exec_info['layer_type']
                 layer_config = layer_exec_info['config']
+                print(layer_config)
 
                 if layer_type == LayerType.DENSE:
                     input_base_addr = layer_config['input_base_addr']
@@ -614,8 +680,18 @@ class FPGAEmulator:
                     if linear_mac_loop_start_ready_in:
                         linear_mac_loop_start_ready_in = 0
                     
+                    # de-assert ready in signal
+                    if linear_mac_loop_next_ready_in:
+                        linear_mac_loop_next_ready_in = 0
+                    
+                    # de-assert ready in signal
+                    if mac_ready_in:
+                        mac_ready_in = 0
+                    
+                    if linear_mac_loop_write_step == 0:
+                        bram1_write_enable = 0
                     # write output from MAC
-                    if linear_mac_loop_write_step == 1:
+                    elif linear_mac_loop_write_step == 1:
                         # not done writing output from MAC and MAC has finished computation
                         if linear_mac_loop_write_lane_index < MAC_LANES and mac_done_out:
                             bram1_write_addr = linear_mac_loop_output_addrs[linear_mac_loop_write_lane_index]
@@ -626,13 +702,15 @@ class FPGAEmulator:
                         # done writing output for MAC
                         elif linear_mac_loop_write_lane_index == MAC_LANES:
                             linear_mac_loop_write_step = 0 # reset to not writing state
+                            linear_mac_loop_write_lane_index = 0
+                            bram1_write_enable = 0
 
                             # done writing output and the loop is complete
                             if linear_mac_loop_done_out:
                                 next_layer = 1 # go to next layer
                     
                     # not finished reading all of the data for each of the MAC lates
-                    if linear_mac_loop_read_lane_index < MAC_LANES:
+                    if (linear_mac_loop_read_lane_index < MAC_LANES) and (linear_mac_loop_write_step == 0):
                         # reading weight and input from BRAM
                         if linear_mac_loop_read_step == 0 and linear_mac_loop_ready_out:
                             bram0_read_addr = linear_mac_loop_weight_addr
@@ -655,8 +733,9 @@ class FPGAEmulator:
                             # if we are writing, we move on to reading the next lane only if reading is behind writing
                             # otherwise if writing is complete (or not started for the first time), then we can read next lane no problems
                             # this is so that we do not overwrite linear_mac_loop_output_addrs while it is being used for writing
-                            if (linear_mac_loop_write_step == 1 and (linear_mac_loop_read_lane_index < linear_mac_loop_write_lane_index)) or \
-                                linear_mac_loop_write_step == 0:
+                            # if (linear_mac_loop_write_step == 1 and (linear_mac_loop_read_lane_index < linear_mac_loop_write_lane_index)) or \
+                            #     linear_mac_loop_write_step == 0:
+                            if linear_mac_loop_write_step == 0:
                                 bram0_read_enable = 0
                                 bram1_read_enable = 0
                                 biases_mac[linear_mac_loop_read_lane_index] = bram1_read_out
@@ -694,6 +773,10 @@ class FPGAEmulator:
                     activation_loop_num_reads = 0
                     activation_loop_num_writes = 0
                     activation_loop_relu_started = 0
+                
+                # de-assert ready in signal
+                if activation_loop_start_ready_in:
+                    activation_loop_start_ready_in = 0
                 
                 # de-assert ready in signal
                 if activation_loop_next_ready_in:
@@ -751,6 +834,10 @@ class FPGAEmulator:
                     move_loop_num_writes = 0
                 
                 # de-assert ready in signal
+                if move_loop_start_ready_in:
+                    move_loop_start_ready_in = 0
+                
+                # de-assert ready in signal
                 if move_loop_next_ready_in:
                     move_loop_next_ready_in = 0
                 
@@ -780,12 +867,58 @@ class FPGAEmulator:
                 # do nothing, this layer involves no computation
                 # # it just indicates to the FSM that this is the final layer, and provides the output addr and size for the result
                 pass
-        
+
+            # print(layer_type, linear_layer_step)
+            # print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
+            # print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
+            # print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
+            # print("linear_mac_loop_started:",linear_mac_loop_started)
+            # print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
+            # print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
+            # print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
+            # print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
+            # print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
+            # print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
+            # print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
+            # print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
+            # print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
+            # print("---")
+            # print("bram0_read_addr:",bram0_read_addr)
+            # print("bram0_read_enable:",bram0_read_enable)
+            # print("bram0_read_out:",bram0_read_out)
+            # print("bram1_read_enable:",bram1_read_enable)
+            # print("bram1_read_addr:",bram1_read_addr)
+            # print("bram1_read_out:",bram1_read_out)
+            # print("bram1_write_enable:",bram1_write_enable)
+            # print("bram1_write_addr:",bram1_write_addr)
+            # print("bram1_write_val:",bram1_write_val)
+            # print("---")
+            # print("mac_ready_in:",mac_ready_in)
+            # print("mac_done_out:",mac_done_out)
+            # print("weights_mac:",weights_mac)
+            # print("inputs_mac:",inputs_mac)
+            # print("biases_mac:",biases_mac)
+            # print("outputs_mac:",outputs_mac)
+            # print("---")
+
+            if layer_num == 2:
+                n_size = 256
+                output_base_addr = 784
+                output_data = [0] * n_size
+                for n in range(256):
+                    output_data[n] = self.bram.read_bank(1, output_base_addr + n)
+                # =====================================================================
+                output_data = np.array(output_data, np.int8) 
+                print(output_data)
+                raise ValueError()
+
+            cycles += 1
+
         # EMULATION OF SENDING OUTPUT DATA FROM NEURAL NETWORK ================
         # this is not meant to be translated to verilog
         output_data = [0] * n_size
         for n in range(n_size):
-            self.bram.read_bank(0, output_base_addr + n)
+            output_data[n] = self.bram.read_bank(1, output_base_addr + n)
         # =====================================================================
         output_data = np.array(output_data, np.int8)
 
