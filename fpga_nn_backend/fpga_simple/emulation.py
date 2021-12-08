@@ -423,6 +423,7 @@ class FPGAEmulator:
         activation_loop_relu_started = 0 # 1 bit
 
         # move loop module signals
+        move_loop_input_addr = 0 # ADDR_BITS
         move_loop_output_addr = 0 # ADDR_BITS
         move_loop_output_prev_addr = 0 # ADDR_BITS
         move_loop_started = 0 # 1 bit
@@ -544,7 +545,8 @@ class FPGAEmulator:
             # activation module
             if activation_loop_start_ready_in:
                 activation_loop_inst = activation_loop(
-                    n_size)
+                    n_size,
+                    output_base_addr)
                 activation_loop_done_out = 0
             if activation_loop_next_ready_in:
                 loop_out = next(activation_loop_inst, None)
@@ -559,14 +561,16 @@ class FPGAEmulator:
             # activation module
             if move_loop_start_ready_in:
                 move_loop_inst = move_loop(
-                    n_size)
+                    n_size,
+                    input_base_addr,
+                    output_base_addr)
                 move_loop_done_out = 0
             if move_loop_next_ready_in:
                 loop_out = next(move_loop_inst, None)
                 if loop_out is not None:
                     move_loop_ready_out = 1
                     move_loop_done_out = 0
-                    move_loop_output_addr, = loop_out                
+                    move_loop_input_addr, move_loop_output_addr, = loop_out                
                 else:
                     move_loop_ready_out = 0
                     move_loop_done_out = 1
@@ -648,6 +652,7 @@ class FPGAEmulator:
                         linear_init_loop_next_ready_in = 0
                         linear_init_loop_first_val_read = 0
                         linear_init_loop_num_writes = 0
+                        next_layer = 1 # go to next layer
                     
                     # de-assert ready in signal
                     if linear_init_loop_next_ready_in:
@@ -773,6 +778,7 @@ class FPGAEmulator:
                     activation_loop_num_reads = 0
                     activation_loop_num_writes = 0
                     activation_loop_relu_started = 0
+                    next_layer = 1 # go to next layer
                 
                 # de-assert ready in signal
                 if activation_loop_start_ready_in:
@@ -832,6 +838,7 @@ class FPGAEmulator:
                     move_loop_next_ready_in = 0
                     move_loop_first_val_read = 0
                     move_loop_num_writes = 0
+                    next_layer = 1 # go to next layer
                 
                 # de-assert ready in signal
                 if move_loop_start_ready_in:
@@ -845,13 +852,13 @@ class FPGAEmulator:
                 if (move_loop_num_writes < m_size) and move_loop_first_val_read:
                     bram1_write_addr = move_loop_output_prev_addr
                     bram1_write_enable = 1
-                    bram1_write_val = bram0_read_out
+                    bram1_write_val = bram1_read_out
                     move_loop_num_writes = move_loop_num_writes + 1
 
                 # read value to move
                 if move_loop_ready_out:
-                    bram0_read_addr = move_loop_output_addr
-                    bram0_read_enable = 1
+                    bram1_read_addr = move_loop_input_addr
+                    bram1_read_enable = 1
                     move_loop_next_ready_in = 1 
                     move_loop_output_prev_addr = move_loop_output_addr
                     move_loop_first_val_read = 1
@@ -866,51 +873,71 @@ class FPGAEmulator:
             elif layer_type == LayerType.OUTPUT:
                 # do nothing, this layer involves no computation
                 # # it just indicates to the FSM that this is the final layer, and provides the output addr and size for the result
-                pass
+                break
 
-            # print(layer_type, linear_layer_step)
-            # print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
-            # print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
-            # print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
-            # print("linear_mac_loop_started:",linear_mac_loop_started)
-            # print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
-            # print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
-            # print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
-            # print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
-            # print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
-            # print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
-            # print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
-            # print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
-            # print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
-            # print("---")
-            # print("bram0_read_addr:",bram0_read_addr)
-            # print("bram0_read_enable:",bram0_read_enable)
-            # print("bram0_read_out:",bram0_read_out)
-            # print("bram1_read_enable:",bram1_read_enable)
-            # print("bram1_read_addr:",bram1_read_addr)
-            # print("bram1_read_out:",bram1_read_out)
-            # print("bram1_write_enable:",bram1_write_enable)
-            # print("bram1_write_addr:",bram1_write_addr)
-            # print("bram1_write_val:",bram1_write_val)
-            # print("---")
-            # print("mac_ready_in:",mac_ready_in)
-            # print("mac_done_out:",mac_done_out)
-            # print("weights_mac:",weights_mac)
-            # print("inputs_mac:",inputs_mac)
-            # print("biases_mac:",biases_mac)
-            # print("outputs_mac:",outputs_mac)
-            # print("---")
+            # if layer_type == LayerType.MOVE:
+            #     print(layer_type, linear_layer_step)
+            #     # print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
+            #     # print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
+            #     # print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
+            #     # print("linear_mac_loop_started:",linear_mac_loop_started)
+            #     # print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
+            #     # print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
+            #     # print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
+            #     # print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
+            #     # print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
+            #     # print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
+            #     # print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
+            #     # print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
+            #     # print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
+            #     # print("---")
+            #     print("bram0_read_addr:",bram0_read_addr)
+            #     print("bram0_read_enable:",bram0_read_enable)
+            #     print("bram0_read_out:",bram0_read_out)
+            #     print("bram1_read_enable:",bram1_read_enable)
+            #     print("bram1_read_addr:",bram1_read_addr)
+            #     print("bram1_read_out:",bram1_read_out)
+            #     print("bram1_write_enable:",bram1_write_enable)
+            #     print("bram1_write_addr:",bram1_write_addr)
+            #     print("bram1_write_val:",bram1_write_val)
+            #     # print("---")
+            #     # print("mac_ready_in:",mac_ready_in)
+            #     # print("mac_done_out:",mac_done_out)
+            #     # print("weights_mac:",weights_mac)
+            #     # print("inputs_mac:",inputs_mac)
+            #     # print("biases_mac:",biases_mac)
+            #     # print("outputs_mac:",outputs_mac)
+            #     print("---")
+            #     print("move_loop_input_addr:",move_loop_input_addr)
+            #     print("move_loop_output_addr:",move_loop_output_addr)
+            #     print("move_loop_output_prev_addr:",move_loop_output_prev_addr)
+            #     print("move_loop_started:",move_loop_started)
+            #     print("move_loop_ready_out:",move_loop_ready_out)
+            #     print("move_loop_done_out:",move_loop_done_out)
+            #     print("move_loop_start_ready_in:",move_loop_start_ready_in)
+            #     print("move_loop_next_ready_in:",move_loop_next_ready_in)
+            #     print("move_loop_first_val_read:",move_loop_first_val_read)
+            #     print("move_loop_num_writes:",move_loop_num_writes)
+            # #     print("---")
 
-            if layer_num == 2:
-                n_size = 256
-                output_base_addr = 784
-                output_data = [0] * n_size
-                for n in range(256):
-                    output_data[n] = self.bram.read_bank(1, output_base_addr + n)
-                # =====================================================================
-                output_data = np.array(output_data, np.int8) 
-                print(output_data)
-                raise ValueError()
+            # if layer_num == 2:
+            #     n_size = 10
+            #     output_base_addr = 784
+            #     output_data = [0] * n_size
+            #     for n in range(n_size):
+            #         output_data[n] = self.bram.read_bank(1, output_base_addr + n)
+            #     # =====================================================================
+            #     output_data = np.array(output_data, np.int8) 
+            #     print(output_data)
+            #     n_size = 10
+            #     output_base_addr = 0
+            #     output_data = [0] * n_size
+            #     for n in range(n_size):
+            #         output_data[n] = self.bram.read_bank(1, output_base_addr + n)
+            #     # =====================================================================
+            #     output_data = np.array(output_data, np.int8) 
+            #     print(output_data)
+            #     print("####")
 
             cycles += 1
 
