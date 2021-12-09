@@ -36,7 +36,7 @@ DATA_BOUNDS = (-128, 127) # 8 bit signed
 DATA_BOUNDS = (-2147483648, 2147483647) # 32 bit signed
 
 # mac params
-MAC_LANES = 10
+MAC_LANES = 1
 
 # implementation params
 BRAM_STACK_SIZE = 64
@@ -197,16 +197,21 @@ def relu(o_in, cycle_delay=1):
 
 def linear_layer_init_loop(
     M,
-    bias_addr,
-    output_addr):
-
+    bias_addr_base,
+    output_addr_base):
+    # Shapes:
+    # bias: (M,)
+    # output: (M,)
+    
+    bias_addr = bias_addr_base
+    output_addr = output_addr_base
     for m in range(M):
-        # output
-        addr_o = m + output_addr
-        # bias
-        addr_b = m + bias_addr
+        yield (bias_addr, output_addr)
 
-        yield (addr_b, addr_o)
+        # bias
+        bias_addr += 1
+        # output
+        output_addr += 1
 
         # o[m] = b[m]
 
@@ -240,6 +245,41 @@ def linear_layer_mac_loop(
         CHWm += CHW
 
 def linear_layer_mac_loop(
+    M,
+    CHW,
+    input_addr_base,
+    weight_addr_base,
+    output_addr_base):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+
+    CHWm = 0
+    input_addr = input_addr_base
+    weight_addr = weight_addr_base
+    output_addr = output_addr_base
+    for m in range(M):
+        for chw in range(CHW):
+            # input
+            if chw == 0:
+                input_addr = input_addr_base
+            else:
+                input_addr += 1
+            
+            yield (input_addr, weight_addr, output_addr)
+            
+            # weight
+            # weight_addr = CHWm + chw + weight_addr_base
+            weight_addr += 1
+            
+            # o[m] = o[m] + i[chw] * w[CHW*m + chw];
+        
+        # output
+        output_addr += 1
+
+def linear_layer_mac_loop2(
     M,
     CHW,
     input_addr,
@@ -293,6 +333,71 @@ def linear_layer_mac_loop(
         CHW_m1L_m0_temp = CHW_m1L_m0 + CHW_M0
         m1L += mac_lanes
 
+def linear_layer_mac_loop2(
+    M,
+    CHW,
+    input_addr_base,
+    weight_addr_base,
+    output_addr_base,
+    mac_lanes=MAC_LANES):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+    
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    input_addr = input_addr_base
+    weight_addr = weight_addr_base
+    output_addr = output_addr_base
+
+    assert mac_lanes <= M
+    M1 = math.ceil(M / mac_lanes)
+    CHW_M0 = CHW * MAC_LANES
+    m1L = 0
+    CHW_m1L_m0 = 0
+    CHW_m1L_m0_temp = 0
+    for m1 in range(M1):
+        for chw in range(CHW):
+            # parallel loop for MAC - start
+
+            # input
+            if chw == 0:
+                input_addr = input_addr_base
+            else:
+                input_addr += 1
+            
+            output_addr
+
+            # m1L = m1 * mac_lanes
+            # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
+            for m0 in range(mac_lanes):
+                # input
+                # input_addr = chw + input_addr
+
+                # output
+                # if m0 == 0:
+                #     output_addr = m1L
+                output_addr = m1L + m0 + output_addr_base
+                # addrs_o[m0] = m1*MAC_LANES + m0 + output_addr
+
+                # weight
+                weight_addr = CHW_m1L_m0_temp + chw + weight_addr_base
+                # addrs_w[m0] = CHW*(m1*MAC_LANES+m0) + chw + weight_addr
+
+                # o[m] = o[m] + i[chw] * w[CHW*m + chw];
+            
+                yield (input_addr, weight_addr, output_addr)
+
+                CHW_m1L_m0_temp += CHW
+            
+            CHW_m1L_m0_temp = CHW_m1L_m0
+            
+            # parallel loop for MAC - end
+        CHW_m1L_m0 += CHW_M0
+        CHW_m1L_m0_temp = CHW_m1L_m0 + CHW_M0
+        m1L += mac_lanes
+
 def conv_loop():
     pass
 
@@ -304,48 +409,52 @@ def sum_loop():
 
 def move_loop(
     N,
-    input_addr,
-    output_addr):
+    input_addr_base,
+    output_addr_base):
     # Shapes:
     # output: (N,)
     
+    input_addr = input_addr_base
+    output_addr = output_addr_base
     for n in range(N):
-        # input
-        addr_i = n + input_addr
-        # output
-        addr_o = n + output_addr
-            
-        yield (addr_i, addr_o,)
+        yield (input_addr, output_addr)
 
-        # o[n] = i[n]
+        # input
+        input_addr += 1
+        # output
+        output_addr += 1
+
+        # o[m] = i[m]
 
 def activation_loop(
     N,
-    output_addr):
+    output_addr_base):
     # Shapes:
     # output: (N,)
     
+    output_addr = output_addr_base
     for n in range(N):
-        # output
-        addr_o = n + output_addr
-            
-        yield (addr_o,)
+        yield (output_addr,)
 
-        # o[n] = activation(o[n])
+        # output
+        output_addr += 1
+
+        # o[m] = activation(o[m])
 
 def reset_loop(
     N,
-    output_addr):
+    output_addr_base):
     # Shapes:
     # output: (N,)
     
+    output_addr = output_addr_base
     for n in range(N):
-        # output
-        addr_o = n + output_addr
-            
-        yield (addr_o,)
+        yield (output_addr,)
 
-        # o[n] = 0
+        # output
+        output_addr += 1
+
+        # o[m] = 0
 
 # =============================================================================
 # Overall FSM
@@ -464,6 +573,16 @@ class FPGAEmulator:
         reset_loop_start_ready_in = 0 # 1 bit
         reset_loop_next_ready_in = 0 # 1 bit
         reset_loop_num_writes = 0 # SIZE_BITS
+
+        # output loop module signals
+        output_loop_output_addr = 0 # ADDR_BITS
+        output_loop_started = 0 # 1 bit
+        output_loop_ready_out = 0 # 1 bit
+        output_loop_done_out = 0 # 1 bit
+        output_loop_start_ready_in = 0 # 1 bit
+        output_loop_next_ready_in = 0 # 1 bit
+        output_loop_num_writes = 0 # SIZE_BITS
+        output_prediction_results = [0] * self.exec_info['output_size'] # 10 by SIZE_BITS
 
         # layer signals
         next_layer = 0 # 1 bit
@@ -791,15 +910,15 @@ class FPGAEmulator:
                             # this is so that we do not overwrite linear_mac_loop_output_addrs while it is being used for writing
                             # if (linear_mac_loop_write_step == 1 and (linear_mac_loop_read_lane_index < linear_mac_loop_write_lane_index)) or \
                             #     linear_mac_loop_write_step == 0:
-                            if linear_mac_loop_write_step == 0:
-                                bram0_read_enable = 0
-                                bram1_read_enable = 0
-                                biases_mac[linear_mac_loop_read_lane_index] = bram1_read_out
-                                linear_mac_loop_output_addrs[linear_mac_loop_read_lane_index] = linear_mac_loop_output_addr
-                                # increment to next lane, and generate new addrs from loop
-                                linear_mac_loop_read_lane_index = linear_mac_loop_read_lane_index + 1
-                                linear_mac_loop_read_step = 0
-                                linear_mac_loop_next_ready_in = 1
+                            # if linear_mac_loop_write_step == 0:
+                            bram0_read_enable = 0
+                            bram1_read_enable = 0
+                            biases_mac[linear_mac_loop_read_lane_index] = bram1_read_out
+                            linear_mac_loop_output_addrs[linear_mac_loop_read_lane_index] = linear_mac_loop_output_addr
+                            # increment to next lane, and generate new addrs from loop
+                            linear_mac_loop_read_lane_index = linear_mac_loop_read_lane_index + 1
+                            linear_mac_loop_read_step = 0
+                            linear_mac_loop_next_ready_in = 1
                     
                     # done reading for all of the lanes
                     elif linear_mac_loop_read_lane_index == MAC_LANES:
@@ -960,7 +1079,7 @@ class FPGAEmulator:
                 # do nothing, this layer involves no computation
                 # # it just indicates to the FSM that this is the final layer, and provides the output addr and size for the result
                 break
-
+            
             # if layer_type == LayerType.MOVE:
             #     print(layer_type, linear_layer_step)
             #     # print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)

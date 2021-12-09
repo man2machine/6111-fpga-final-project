@@ -326,8 +326,12 @@ class ConvertedNN:
         param_datas = b''.join(param_datas)
         byte_datas = bytearray()
         num_bytes_per_line = 4
-        for b in param_datas:
-            byte_datas += struct.pack('>i', b)
+        for b in param_datas:            
+            if num_bytes_per_line == 4:
+                b = int(np.int8(b))
+                byte_datas += struct.pack('>i', b)
+            else:
+                byte_datas.append(b)
         total_weight_data = b'\xff' + bytes(byte_datas)
         bin_str_data = bin(int.from_bytes(total_weight_data, byteorder='big'))
         bin_str_data = bin_str_data[10:]
@@ -353,6 +357,8 @@ class ConvertedNN:
         ]
 
         max_addr_used = 0
+
+        exec_info = {}
 
         # start from last layer, go backwards
         for i in range(0, num_layers):
@@ -471,7 +477,9 @@ class ConvertedNN:
                 }
 
                 output_config['output_base_addr'] = sum([layer_stack[i] for i in range(len(layer_stack) - 1)])
-                output_config['n_size'] = np.prod(layer_info['output_shape'])                
+                output_config['n_size'] = np.prod(layer_info['output_shape'])
+                exec_info['output_shape'] = layer_info['output_shape']
+                exec_info['output_size'] = np.prod(layer_info['output_shape'])
 
                 layer_exec_info['config'] = output_config
                 exec_layer_infos.append(layer_exec_info)
@@ -499,9 +507,8 @@ class ConvertedNN:
         reset_config['n_size'] = max_addr_used + 1 - input_size
         layer_exec_info['config'] = reset_config
         exec_layer_infos.insert(0, layer_exec_info)
-
-        exec_info = {}
         exec_info['input_shape'] = self.input_shape
+        exec_info['input_size'] = input_size
         exec_info['inital_input_addr'] = 0
         exec_info['layers'] = exec_layer_infos
 
