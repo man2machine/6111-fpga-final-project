@@ -173,6 +173,9 @@ def mac(w_in, i_in, b_in, lanes=MAC_LANES, cycle_delay=3):
     i_in = np.int32(i_in[:])
     b_in = np.int32(b_in[:])
     yield None # first cycle copy variables
+    if i_in[0] != 0:
+        print(w_in, i_in, b_in)
+        raise ValueError()
     o_out = [0] * lanes
     for i in range(lanes):
         o_out[i] = np.int32(w_in[i] * i_in[i] + b_in[i])
@@ -1055,10 +1058,6 @@ class FPGAEmulator:
                 # de-assert ready in signal
                 if reset_loop_start_ready_in:
                     reset_loop_start_ready_in = 0
-                
-                # de-assert ready in signal
-                if reset_loop_next_ready_in:
-                    reset_loop_next_ready_in = 0
 
                 # write reset value to output
                 if reset_loop_ready_out:
@@ -1067,6 +1066,10 @@ class FPGAEmulator:
                     bram1_write_val = 0
                     reset_loop_next_ready_in = 1
                     reset_loop_num_writes = reset_loop_num_writes + 1
+                else:
+                    # de-assert ready in signal
+                    if reset_loop_next_ready_in:
+                        reset_loop_next_ready_in = 0
                 
                 # entering this state for the first time
                 if not reset_loop_started:
@@ -1080,50 +1083,38 @@ class FPGAEmulator:
                 # # it just indicates to the FSM that this is the final layer, and provides the output addr and size for the result
                 break
             
-            # if layer_type == LayerType.MOVE:
-            #     print(layer_type, linear_layer_step)
-            #     # print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
-            #     # print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
-            #     # print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
-            #     # print("linear_mac_loop_started:",linear_mac_loop_started)
-            #     # print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
-            #     # print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
-            #     # print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
-            #     # print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
-            #     # print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
-            #     # print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
-            #     # print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
-            #     # print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
-            #     # print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
-            #     # print("---")
-            #     print("bram0_read_addr:",bram0_read_addr)
-            #     print("bram0_read_enable:",bram0_read_enable)
-            #     print("bram0_read_out:",bram0_read_out)
-            #     print("bram1_read_enable:",bram1_read_enable)
-            #     print("bram1_read_addr:",bram1_read_addr)
-            #     print("bram1_read_out:",bram1_read_out)
-            #     print("bram1_write_enable:",bram1_write_enable)
-            #     print("bram1_write_addr:",bram1_write_addr)
-            #     print("bram1_write_val:",bram1_write_val)
-            #     # print("---")
-            #     # print("mac_ready_in:",mac_ready_in)
-            #     # print("mac_done_out:",mac_done_out)
-            #     # print("weights_mac:",weights_mac)
-            #     # print("inputs_mac:",inputs_mac)
-            #     # print("biases_mac:",biases_mac)
-            #     # print("outputs_mac:",outputs_mac)
-            #     print("---")
-            #     print("move_loop_input_addr:",move_loop_input_addr)
-            #     print("move_loop_output_addr:",move_loop_output_addr)
-            #     print("move_loop_output_prev_addr:",move_loop_output_prev_addr)
-            #     print("move_loop_started:",move_loop_started)
-            #     print("move_loop_ready_out:",move_loop_ready_out)
-            #     print("move_loop_done_out:",move_loop_done_out)
-            #     print("move_loop_start_ready_in:",move_loop_start_ready_in)
-            #     print("move_loop_next_ready_in:",move_loop_next_ready_in)
-            #     print("move_loop_first_val_read:",move_loop_first_val_read)
-            #     print("move_loop_num_writes:",move_loop_num_writes)
-            # #     print("---")
+            print(layer_type, linear_layer_step)
+            print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
+            print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
+            print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
+            print("linear_mac_loop_started:",linear_mac_loop_started)
+            print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
+            print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
+            print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
+            print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
+            print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
+            print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
+            print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
+            print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
+            print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
+            print("---")
+            print("bram0_read_addr:",bram0_read_addr)
+            print("bram0_read_enable:",bram0_read_enable)
+            print("bram0_read_out:",bram0_read_out)
+            print("bram1_read_enable:",bram1_read_enable)
+            print("bram1_read_addr:",bram1_read_addr)
+            print("bram1_read_out:",bram1_read_out)
+            print("bram1_write_enable:",bram1_write_enable)
+            print("bram1_write_addr:",bram1_write_addr)
+            print("bram1_write_val:",bram1_write_val)
+            print("---")
+            print("mac_ready_in:",mac_ready_in)
+            print("mac_done_out:",mac_done_out)
+            print("weights_mac:",weights_mac)
+            print("inputs_mac:",inputs_mac)
+            print("biases_mac:",biases_mac)
+            print("outputs_mac:",outputs_mac)
+            print("---")
 
             # if layer_num == 2:
             #     n_size = 10
