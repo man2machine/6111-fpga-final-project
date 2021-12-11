@@ -173,9 +173,6 @@ def mac(w_in, i_in, b_in, lanes=MAC_LANES, cycle_delay=3):
     i_in = np.int32(i_in[:])
     b_in = np.int32(b_in[:])
     yield None # first cycle copy variables
-    if i_in[0] != 0:
-        print(w_in, i_in, b_in)
-        raise ValueError()
     o_out = [0] * lanes
     for i in range(lanes):
         o_out[i] = np.int32(w_in[i] * i_in[i] + b_in[i])
@@ -336,12 +333,77 @@ def linear_layer_mac_loop2(
         CHW_m1L_m0_temp = CHW_m1L_m0 + CHW_M0
         m1L += mac_lanes
 
+# def linear_layer_mac_loop2(
+#     M,
+#     CHW,
+#     input_addr_base,
+#     weight_addr_base,
+#     output_addr_base,
+#     mac_lanes=MAC_LANES):
+#     # Shapes:
+#     # input: (CHW,)
+#     # weight: (M, CHW)
+#     # bias: (M,)
+#     # output: (M,)
+    
+#     # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+#     input_addr = input_addr_base
+#     weight_addr = weight_addr_base
+#     output_addr = output_addr_base
+
+#     assert mac_lanes <= M
+#     M1 = math.ceil(M / mac_lanes)
+#     CHW_M0 = CHW * MAC_LANES
+#     m1L = 0
+#     CHW_m1L_m0 = 0
+#     CHW_m1L_m0_temp = 0
+#     for m1 in range(M1):
+#         for chw in range(CHW):
+#             # parallel loop for MAC - start
+
+#             # input
+#             if chw == 0:
+#                 input_addr = input_addr_base
+#             else:
+#                 input_addr += 1
+            
+#             output_addr
+
+#             # m1L = m1 * mac_lanes
+#             # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
+#             for m0 in range(mac_lanes):
+#                 # input
+#                 # input_addr = chw + input_addr
+
+#                 # output
+#                 # if m0 == 0:
+#                 #     output_addr = m1L
+#                 output_addr = m1L + m0 + output_addr_base
+#                 # addrs_o[m0] = m1*MAC_LANES + m0 + output_addr
+
+#                 # weight
+#                 weight_addr = CHW_m1L_m0_temp + chw + weight_addr_base
+#                 # addrs_w[m0] = CHW*(m1*MAC_LANES+m0) + chw + weight_addr
+
+#                 # o[m] = o[m] + i[chw] * w[CHW*m + chw];
+            
+#                 yield (input_addr, weight_addr, output_addr)
+
+#                 CHW_m1L_m0_temp += CHW
+            
+#             CHW_m1L_m0_temp = CHW_m1L_m0
+            
+#             # parallel loop for MAC - end
+#         CHW_m1L_m0 += CHW_M0
+#         CHW_m1L_m0_temp = CHW_m1L_m0 + CHW_M0
+#         m1L += mac_lanes
+
 def linear_layer_mac_loop2(
     M,
     CHW,
-    input_addr_base,
-    weight_addr_base,
-    output_addr_base,
+    input_addr,
+    weight_addr,
+    output_addr,
     mac_lanes=MAC_LANES):
     # Shapes:
     # input: (CHW,)
@@ -350,9 +412,9 @@ def linear_layer_mac_loop2(
     # output: (M,)
     
     # addrs_* are arrays containing tuples of (addr in bram, bram bank)
-    input_addr = input_addr_base
-    weight_addr = weight_addr_base
-    output_addr = output_addr_base
+    addrs_i = [0]*mac_lanes
+    addrs_w = [0]*mac_lanes
+    addrs_o = [0]*mac_lanes
 
     assert mac_lanes <= M
     M1 = math.ceil(M / mac_lanes)
@@ -364,35 +426,83 @@ def linear_layer_mac_loop2(
         for chw in range(CHW):
             # parallel loop for MAC - start
 
-            # input
-            if chw == 0:
-                input_addr = input_addr_base
-            else:
-                input_addr += 1
-            
-            output_addr
-
             # m1L = m1 * mac_lanes
             # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
             for m0 in range(mac_lanes):
                 # input
-                # input_addr = chw + input_addr
+                addrs_i[m0] = chw + input_addr
 
                 # output
-                # if m0 == 0:
-                #     output_addr = m1L
-                output_addr = m1L + m0 + output_addr_base
+                addrs_o[m0] = m1L + m0 + output_addr
                 # addrs_o[m0] = m1*MAC_LANES + m0 + output_addr
 
                 # weight
-                weight_addr = CHW_m1L_m0_temp + chw + weight_addr_base
+                addrs_w[m0] = CHW_m1L_m0_temp + chw + weight_addr
+                CHW_m1L_m0_temp += CHW
                 # addrs_w[m0] = CHW*(m1*MAC_LANES+m0) + chw + weight_addr
 
                 # o[m] = o[m] + i[chw] * w[CHW*m + chw];
             
-                yield (input_addr, weight_addr, output_addr)
+                yield (addrs_i[m0], addrs_w[m0], addrs_o[m0])
+            
+            CHW_m1L_m0_temp = CHW_m1L_m0
+            
+            # parallel loop for MAC - end
+        CHW_m1L_m0 += CHW_M0
+        CHW_m1L_m0_temp = CHW_m1L_m0 + CHW_M0
+        m1L += mac_lanes
 
+def linear_layer_mac_loop2(
+    M,
+    CHW,
+    input_addr,
+    weight_addr,
+    output_addr,
+    mac_lanes=MAC_LANES):
+    # Shapes:
+    # input: (CHW,)
+    # weight: (M, CHW)
+    # bias: (M,)
+    # output: (M,)
+    
+    # addrs_* are arrays containing tuples of (addr in bram, bram bank)
+    addrs_i = [0]*mac_lanes
+    addrs_w = [0]*mac_lanes
+    addrs_o = [0]*mac_lanes
+
+    assert mac_lanes <= M
+    M1 = math.ceil(M / mac_lanes)
+    CHW_M0 = CHW * mac_lanes
+    m1L = 0
+    CHW_m1L_m0 = 0
+    CHW_m1L_m0_temp = 0
+    for m1 in range(M1):
+        for chw in range(CHW):
+            # parallel loop for MAC - start
+
+            # m1L = m1 * mac_lanes
+            # CHW_m1L_m0 = (m1L * mac_lanes + m0) * CHW
+            for m0 in range(mac_lanes):
+                # print("--")
+                
+                # input
+                addrs_i[m0] = chw + input_addr
+
+                # output
+                addrs_o[m0] = m1*mac_lanes + m0 + output_addr
+                # addrs_o[m0] = m1*MAC_LANES + m0 + output_addr
+
+                # weight
+                addrs_w[m0] = CHW*(m1*mac_lanes+m0) + chw + weight_addr
                 CHW_m1L_m0_temp += CHW
+                # addrs_w[m0] = CHW*(m1*MAC_LANES+m0) + chw + weight_addr
+
+                # o[m] = o[m] + i[chw] * w[CHW*m + chw];
+
+                # print(m1, chw, m0)
+                # print(addrs_i[m0], addrs_w[m0], addrs_o[m0])
+            
+                yield (addrs_i[m0], addrs_w[m0], addrs_o[m0])
             
             CHW_m1L_m0_temp = CHW_m1L_m0
             
@@ -763,7 +873,6 @@ class FPGAEmulator:
                 layer_exec_info = layers[layer_num]
                 layer_type = layer_exec_info['layer_type']
                 layer_config = layer_exec_info['config']
-                print(layer_exec_info)
 
                 if layer_type == LayerType.DENSE:
                     input_base_addr = layer_config['input_base_addr']
@@ -1083,38 +1192,52 @@ class FPGAEmulator:
                 # # it just indicates to the FSM that this is the final layer, and provides the output addr and size for the result
                 break
             
-            print(layer_type, linear_layer_step)
-            print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
-            print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
-            print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
-            print("linear_mac_loop_started:",linear_mac_loop_started)
-            print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
-            print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
-            print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
-            print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
-            print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
-            print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
-            print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
-            print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
-            print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
-            print("---")
-            print("bram0_read_addr:",bram0_read_addr)
-            print("bram0_read_enable:",bram0_read_enable)
-            print("bram0_read_out:",bram0_read_out)
-            print("bram1_read_enable:",bram1_read_enable)
-            print("bram1_read_addr:",bram1_read_addr)
-            print("bram1_read_out:",bram1_read_out)
-            print("bram1_write_enable:",bram1_write_enable)
-            print("bram1_write_addr:",bram1_write_addr)
-            print("bram1_write_val:",bram1_write_val)
-            print("---")
-            print("mac_ready_in:",mac_ready_in)
-            print("mac_done_out:",mac_done_out)
-            print("weights_mac:",weights_mac)
-            print("inputs_mac:",inputs_mac)
-            print("biases_mac:",biases_mac)
-            print("outputs_mac:",outputs_mac)
-            print("---")
+            # print(layer_type, linear_layer_step)
+            # print("linear_mac_loop_input_addr:",linear_mac_loop_input_addr)
+            # print("linear_mac_loop_weight_addr:",linear_mac_loop_weight_addr)
+            # print("linear_mac_loop_output_addr:",linear_mac_loop_output_addr)
+            # print("linear_mac_loop_started:",linear_mac_loop_started)
+            # print("linear_mac_loop_ready_out:",linear_mac_loop_ready_out)
+            # print("linear_mac_loop_done_out:",linear_mac_loop_done_out)
+            # print("linear_mac_loop_start_ready_in:",linear_mac_loop_start_ready_in)
+            # print("linear_mac_loop_next_ready_in:",linear_mac_loop_next_ready_in)
+            # print("linear_mac_loop_read_step:",linear_mac_loop_read_step)
+            # print("linear_mac_loop_read_lane_index:",linear_mac_loop_read_lane_index)
+            # print("linear_mac_loop_write_step:",linear_mac_loop_write_step)
+            # print("linear_mac_loop_write_lane_index:",linear_mac_loop_write_lane_index)
+            # print("linear_mac_loop_output_addrs:",linear_mac_loop_output_addrs)
+            # print("---")
+            # print("bram0_read_addr:",bram0_read_addr)
+            # print("bram0_read_enable:",bram0_read_enable)
+            # print("bram0_read_out:",bram0_read_out)
+            # print("bram1_read_enable:",bram1_read_enable)
+            # print("bram1_read_addr:",bram1_read_addr)
+            # print("bram1_read_out:",bram1_read_out)
+            # print("bram1_write_enable:",bram1_write_enable)
+            # print("bram1_write_addr:",bram1_write_addr)
+            # print("bram1_write_val:",bram1_write_val)
+            # print("---")
+            # print("mac_ready_in:",mac_ready_in)
+            # print("mac_done_out:",mac_done_out)
+            # print("weights_mac:",weights_mac)
+            # print("inputs_mac:",inputs_mac)
+            # print("biases_mac:",biases_mac)
+            # print("outputs_mac:",outputs_mac)
+            # # print("---")
+            # # print("move_loop_input_addr:",move_loop_input_addr)
+            # # print("move_loop_output_addr:",move_loop_output_addr)
+            # # print("move_loop_output_prev_addr:",move_loop_output_prev_addr)
+            # # print("move_loop_started:",move_loop_started)
+            # # print("move_loop_ready_out:",move_loop_ready_out)
+            # # print("move_loop_done_out:",move_loop_done_out)
+            # # print("move_loop_start_ready_in:",move_loop_start_ready_in)
+            # # print("move_loop_next_ready_in:",move_loop_next_ready_in)
+            # # print("move_loop_first_val_read:",move_loop_first_val_read)
+            # # print("move_loop_num_writes:",move_loop_num_writes)
+            # # print("---")
+
+            # if inputs_mac[0] != 0:
+            #     raise ValueError()
 
             # if layer_num == 2:
             #     n_size = 10

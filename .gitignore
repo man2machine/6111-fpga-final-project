@@ -1,5 +1,6 @@
 vivado/
 *.coe
+scripts/*.sv
 
 dataset/
 logs/
