@@ -2,6 +2,7 @@ vivado/
 *.coe
 scripts/*.sv
 
+demos/
 dataset/
 logs/
 experiments/
@@ -10,6 +11,7 @@ sessions/
 models/
 extra/
 old/
+old2/
 images/
 
 *.pckl

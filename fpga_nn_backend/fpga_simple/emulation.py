@@ -1260,7 +1260,7 @@ class FPGAEmulator:
 
             cycles += 1
         
-        print("Cycles:", cycles)
+        # print("Cycles:", cycles)
 
         # EMULATION OF SENDING OUTPUT DATA FROM NEURAL NETWORK ================
         # this is not meant to be translated to verilog
